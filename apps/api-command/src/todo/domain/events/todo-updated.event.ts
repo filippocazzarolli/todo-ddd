@@ -34,6 +34,8 @@ export interface TodoChanges {
 export class TodoUpdatedEvent {
   constructor(
     public readonly todoId: string,
+    /** Come in ogni evento del modulo: vedi `TodoCreatedEvent`. */
+    public readonly ownerId: string,
     public readonly changes: TodoChanges,
   ) {}
 }

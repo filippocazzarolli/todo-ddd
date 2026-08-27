@@ -7,6 +7,16 @@
 export class TodoCreatedEvent {
   constructor(
     public readonly todoId: string,
+    /**
+     * Proprietario del todo. Presente qui e in **tutti** gli altri eventi del
+     * modulo, non solo in questo: un evento deve essere autoconsistente per
+     * chi lo consuma, e il lato query deve poter autorizzare e partizionare la
+     * proiezione senza tenere una tabella di lookup `todoId -> owner`. Il
+     * costo di metterlo ovunque adesso è una riga per evento; aggiungerlo dopo,
+     * con eventi già su una coda, è una migrazione di schema con due versioni
+     * in volo.
+     */
+    public readonly ownerId: string,
     public readonly title: string,
     public readonly important: boolean,
     public readonly tags: readonly string[],

@@ -25,7 +25,12 @@ export class UpdateTodoHandler implements ICommandHandler<UpdateTodoCommand> {
   ) {}
 
   async execute(command: UpdateTodoCommand): Promise<void> {
-    const todo = await loadTodo(this.todos, this.publisher, command.todoId);
+    const todo = await loadTodo(
+      this.todos,
+      this.publisher,
+      command.todoId,
+      command.actorId,
+    );
 
     todo.update({ now: this.clock.now(), ...command.fields });
 

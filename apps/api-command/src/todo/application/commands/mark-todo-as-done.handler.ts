@@ -25,7 +25,12 @@ export class MarkTodoAsDoneHandler implements ICommandHandler<MarkTodoAsDoneComm
   ) {}
 
   async execute(command: MarkTodoAsDoneCommand): Promise<void> {
-    const todo = await loadTodo(this.todos, this.publisher, command.todoId);
+    const todo = await loadTodo(
+      this.todos,
+      this.publisher,
+      command.todoId,
+      command.actorId,
+    );
 
     todo.markAsDone();
 

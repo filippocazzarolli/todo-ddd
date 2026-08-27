@@ -8,12 +8,16 @@ import { InMemoryTodoRepository } from './in-memory-todo.repository';
 
 const TODO_ID = 'todo-1';
 
+/** L'adapter non interpreta il proprietario: per lui e` un campo come gli altri. */
+const OWNER_ID = 'user-1';
+
 /** Istante fisso: arriva dalla porta `Clock`, nessun fake timer. */
 const NOW = new Date(2026, 0, 15, 10, 30);
 
 function createProps(overrides: Partial<CreateTodoProps> = {}) {
   return {
     todoId: TODO_ID,
+    ownerId: OWNER_ID,
     title: 'Comprare il latte',
     now: NOW,
     ...overrides,

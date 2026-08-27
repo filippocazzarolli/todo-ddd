@@ -36,10 +36,11 @@ che rende sostituibile la persistenza senza toccare una riga di logica.
 Creazione — l'unico caso in cui l'aggregato nasce invece di essere caricato:
 
 ```
-HTTP POST /todos
-  -> TodoController                 traduce body -> CreateTodoCommand
+HTTP POST /todos                    header x-user-id: l'attore
+  -> TodoController                 @Actor() + body -> CreateTodoCommand
   -> CommandBus                     trova l'handler dal tipo del command
-  -> CreateTodoHandler              todoId da TodoIdGenerator, now da Clock
+  -> CreateTodoHandler              todoId da TodoIdGenerator, now da Clock,
+                                    l'attore diventa l'ownerId
   -> Todo.create(...)               valida le invarianti, registra l'evento
   -> TodoRepository.add(todo)       prima si persiste...
   -> todo.commit()                  ...poi si pubblica sull'EventBus
@@ -49,10 +50,11 @@ HTTP POST /todos
 Ogni altro comando carica l'aggregato invece di costruirlo:
 
 ```
-HTTP PATCH /todos/:todoId
-  -> TodoController                 -> UpdateTodoCommand(todoId, fields)
+HTTP PATCH /todos/:todoId           header x-user-id: l'attore
+  -> TodoController                 -> UpdateTodoCommand(actorId, todoId, fields)
   -> UpdateTodoHandler
-  -> loadTodo(...)                  findById + mergeObjectContext, o TodoNotFoundError
+  -> loadTodo(...)                  findById -> ensureOwnedBy -> mergeObjectContext,
+                                    o TodoNotFoundError / TodoNotOwnedError
   -> todo.update(...)               decide cosa è cambiato davvero
   -> TodoRepository.update(todo)
   -> todo.commit()
@@ -80,6 +82,7 @@ uno completato, e il suo `status` resta un'informazione valida.
   rappresentazione;
 - la scadenza è una data e ora reale e non può essere assegnata nel passato;
 - un todo cancellato non accetta nessun comando;
+- solo il proprietario può agire su un todo;
 - completare un todo già completato, o riaprirne uno aperto, è un errore — non
   un no-op.
 
@@ -95,6 +98,75 @@ ricaricare.
 emette niente, perché quei fatti sono già accaduti. `snapshot()` è la direzione
 opposta, ed è l'unico modo in cui lo stato esce dall'aggregato.
 
+## Il proprietario
+
+Ogni todo ha un `ownerId`: il riferimento a un altro aggregato, tenuto **per
+identità** e non per oggetto. Non c'è nessun `User` dentro `Todo`, e `todo/` non
+importa una riga da `user/` — un aggregato annidato allargherebbe il confine
+transazionale a due aggregati, accoppierebbe due bounded context che oggi si
+ignorano, e non sarebbe una colonna.
+
+`ownerId` e non `userId` perché è il _ruolo_ che quell'identità ha qui dentro:
+questo modulo non conosce l'aggregato `User`, conosce un'identità esterna che
+possiede il todo. Per la stessa ragione i comandi parlano invece di `actorId`:
+il comando dice _chi chiede_, l'aggregato dice _di chi è_. La sola traduzione
+tra i due è in `CreateTodoHandler`, dove chi crea diventa proprietario.
+
+**L'ownership non è modificabile.** `ownerId` sta in `TodoProps` e in
+`CreateTodoProps`, non in `UpdateTodoProps`: trasferire un todo ha
+precondizioni proprie e vorrà un comando dedicato con il suo evento, non un
+campo in un update parziale. È la stessa scelta dell'email in `UpdateUserProps`.
+
+**L'esistenza del proprietario non è un invariante dell'aggregato.**
+Verificarla richiede di guardare fuori dal confine transazionale, esattamente
+come l'unicità dell'email che `User` si rifiuta di controllare. `Todo.create`
+accetta qualunque `ownerId`; il fallimento è dichiarato dalla porta di
+persistenza (`TodoOwnerNotFoundError` su `add`) perché l'unico posto in cui la
+verifica è atomica è un vincolo di chiave esterna. Nessun adapter lo solleva
+oggi: `InMemoryTodoRepository` non vede gli utenti, quindi un todo orfano è
+rappresentabile. L'alternativa — l'handler che interroga `UserRepository` — è
+stata scartata: accoppierebbe i due contesti sul lato write per una verifica
+che resta comunque non atomica.
+
+**Il verso dell'associazione è uno solo.** `User` non tiene la lista dei suoi
+todo: sarebbe una collection illimitata dentro un aggregato e un secondo punto
+di verità, e "quanti todo ha l'utente" è una domanda del read model. L'unica
+cosa che romperebbe la regola sarebbe un invariante tipo _"il piano free ammette
+al massimo N todo"_ — e neanche allora la risposta sarebbe annidare i todo, ma
+la coerenza eventuale su un contatore proiettato o un aggregato quota dedicato.
+
+### Ownership e autorizzazione
+
+Sono due cose diverse. `ownerId` risponde a "di chi è"; "chi può modificarlo" è
+una regola _sull'ownership_, e vive in `Todo.ensureOwnedBy` — l'unico controllo
+pubblico dell'aggregato — perché è verificabile con i soli dati che l'aggregato
+ha, e quindi testabile senza mock.
+
+Ma è invocata in `loadTodo`, insieme al `mergeObjectContext`, e per la stessa
+ragione: un controllo di autorizzazione dimenticato in un handler non lancia
+niente e non rompe nessun test. Tenendolo nel punto obbligato del caricamento,
+non si può dimenticare. `create` non passa da lì e non ne ha bisogno: il
+proprietario _è_ l'attore, per costruzione.
+
+L'ordine è `findById` -> `ensureOwnedBy` -> tutto il resto. Chi non possiede il
+todo non arriva mai a `ensureNotDeleted`, quindi non distingue un todo
+cancellato da uno vivo; e un id inesistente resta un 404 per tutti, perché la
+ricerca precede l'autorizzazione.
+
+### L'attore al confine HTTP
+
+Arriva da `@Actor()` (`shared/presentation/actor.decorator.ts`), che lo legge
+dall'header `x-user-id`. **Mai dal body**: un campo `ownerId` in
+`CreateTodoBody` sarebbe controllato dal client, chiunque potrebbe scrivere per
+conto di chiunque, e il buco non si chiuderebbe più senza breaking change.
+
+L'header è un **segnaposto** dichiarato: chiunque può metterci qualunque cosa,
+quindi non è autenticazione. Il punto è che il giorno in cui arriva quella vera
+cambia solo quel file — controller, comandi e dominio non se ne accorgono.
+Header assente o vuoto è `401`, ed è un'`HttpException` di Nest: non passa da
+`TodoErrorFilter`, perché l'identità precede il dominio e non è un contratto di
+questo modulo.
+
 ## Comandi ed eventi
 
 | Rotta                        | Command                 | Metodo di dominio | Evento                  |
@@ -107,12 +179,20 @@ opposta, ed è l'unico modo in cui lo stato esce dall'aggregato.
 
 `CreateTodoCommand` è l'unico `Command<string>`: restituisce il `todoId` perché
 è il server a generarlo. Gli altri sono `Command<void>` e ricevono l'id dalla
-rotta.
+rotta. Tutti portano l'`actorId` come primo campo: chi agisce viene prima di ciò
+su cui si agisce.
 
 Le rotte sono per **intenzione** e non per stato della risorsa (`POST
 /:id/reopen`, non `PUT /:id/done` con `false`): i due casi hanno esiti diversi
 e appiattirli su una scrittura di campo li renderebbe indistinguibili sia in
 ingresso sia nell'evento.
+
+**Tutti** gli eventi portano l'`ownerId` oltre al `todoId`, non solo
+`TodoCreatedEvent`: un evento deve essere autoconsistente per chi lo consuma, e
+il lato query deve poter autorizzare e partizionare la proiezione senza tenere
+una tabella di lookup `todoId -> owner`. Il costo di metterlo ovunque adesso è
+una riga per evento; aggiungerlo dopo, con eventi già su una coda, è una
+migrazione di schema con due versioni in volo.
 
 `TodoUpdatedEvent` porta il **delta** e non lo stato completo: chiave assente
 significa "non toccato", `null` significa "azzerato". Un update che non cambia
@@ -139,8 +219,22 @@ Tre gerarchie separate, perché la mappatura a valle deve poterle distinguere:
 | --------------------------------------------------- | ------------------------------------ | ------ |
 | `TodoDomainError` (invariante violata)              | input rifiutato dal dominio          | 400    |
 | ┗ `TodoAlreadyDone` / `NotDone` / `Deleted`         | conflitto con lo stato attuale       | 409    |
+| ┗ `TodoNotOwnedError`                               | il todo è di qualcun altro           | 403    |
 | `TodoNotFoundError` (application)                   | il comando cita qualcosa che non c'è | 404    |
 | `TodoPersistenceError` (`AlreadyExists`/`NoLonger`) | scrittura andata a vuoto             | 409    |
+| ┗ `TodoOwnerNotFoundError`                          | l'`ownerId` non è di nessuno         | 400    |
+
+Le due foglie con uno status diverso dalla loro base vanno controllate **prima**
+di essa nel filtro, o collasserebbero sul default: l'accesso negato
+diventerebbe indistinguibile da un input malformato.
+
+`TodoNotOwnedError` è 403 e non 404: il repo preferisce i segnali distinti, e
+con id UUIDv7 non enumerabili il 403 non regala niente a chi tira a indovinare.
+Se il modello di minaccia cambiasse, la decisione si ribalta in una riga del
+filtro — il dominio continua a sollevare lo stesso errore e non se ne accorge.
+
+L'`UnauthorizedException` del decoratore `@Actor()` **non** passa di qui: 401 è
+di Nest, e l'autenticazione precede il dominio.
 
 La traduzione è in [`presentation/todo-error.filter.ts`](./presentation/todo-error.filter.ts),
 registrato sul controller e non globalmente. Il body porta
@@ -150,7 +244,7 @@ può essere tre cose diverse, e la reazione giusta del client cambia.
 Un errore di dominio nuovo, non elencato nel filtro, diventa **400 e non 500**:
 è sempre colpa del chiamante, mai del server.
 
-## Sette decisioni non ovvie
+## Otto decisioni non ovvie
 
 Sono i punti in cui il codice sembra più complicato del necessario, e non lo è.
 
@@ -194,7 +288,14 @@ titolo obbligatorio e il formato della scadenza sono regole di dominio, e
 duplicarle nei DTO creerebbe una seconda verità da tenere allineata. Entrambe
 finiscono in un 400 comunque.
 
-Un ottavo punto che non è una decisione ma una trappola: **`Todo.update` valida
+**8. L'autorizzazione sta nell'aggregato ma si invoca in `loadTodo`.** La
+regola (`ensureOwnedBy`) vive dove sono i dati per verificarla; l'invocazione
+sta nel punto obbligato del caricamento perché un check dimenticato fallisce in
+silenzio come un merge dimenticato. L'alternativa — l'attore come parametro di
+ogni metodo di comando — è ugualmente sicura ma mescola _chi chiede_ e _cosa
+chiede_ in cinque firme.
+
+Un nono punto che non è una decisione ma una trappola: **`Todo.update` valida
 tutto prima di mutare qualsiasi cosa**. Mutando campo per campo, un update con
 titolo valido e scadenza nel passato lascerebbe l'aggregato in memoria a metà —
 uno stato che nessun comando ha chiesto e che il repository non salverebbe mai.
@@ -221,7 +322,8 @@ Command<void>` (o `Command<T>` se deve restituire qualcosa), senza logica e
 
 ## Test
 
-217 test unitari sul modulo più 17 e2e, divisi per quello che possono provare:
+237 test unitari sul modulo (più 10 in `shared/`) e 27 e2e, divisi per quello
+che possono provare:
 
 | Dove                              | Cosa verifica                                                         |
 | --------------------------------- | --------------------------------------------------------------------- |
@@ -253,9 +355,16 @@ In ordine di importanza, non di difficoltà:
    ottimistica (senza una versione, due comandi concorrenti sullo stesso todo si
    sovrascrivono a vicenda) e il confine transazionale che tenga insieme
    scrittura e outbox.
-4. **Il todo non ha un proprietario.** Nessun `userId`: è una decisione di
-   prodotto da prendere prima della persistenza vera, perché cambia identità,
-   autorizzazione e query.
-5. **Dettagli**: `category` è ancora solo un commento in `TodoProps`; non c'è
+4. **Il ciclo di vita del proprietario non è gestito.** Il todo ha un
+   `ownerId`, ma niente reagisce a `UserDeletedEvent`: i todo di un utente
+   cancellato restano. Non si risolve con una transazione su due aggregati, ma
+   con una policy in coerenza eventuale — che richiede prima il package
+   condiviso di contratti del punto 1. E finché la persistenza è in memoria non
+   c'è la chiave esterna che renda impossibile un todo orfano
+   (`TodoOwnerNotFoundError` è dichiarato ma mai sollevato).
+5. **L'autenticazione è un segnaposto.** `@Actor()` si fida dell'header
+   `x-user-id`: chiunque può dichiararsi chiunque. L'ownership è modellata e
+   verificata, ma l'identità su cui si basa non è provata.
+6. **Dettagli**: `category` è ancora solo un commento in `TodoProps`; non c'è
    idempotenza sul bus (i comandi non sono idempotenti per scelta); non c'è
    correlation id per seguire comando -> evento -> proiezione.

@@ -36,6 +36,12 @@ export interface UpdateTodoFields {
  */
 export class UpdateTodoCommand extends Command<void> {
   constructor(
+    /**
+     * Chi esegue il comando, dal contesto di autenticazione e mai dal body:
+     * vedi `CreateTodoCommand`. Qui non assegna niente, serve a `loadTodo` per
+     * verificare che l'attore sia il proprietario del todo.
+     */
+    public readonly actorId: string,
     public readonly todoId: string,
     public readonly fields: UpdateTodoFields,
   ) {

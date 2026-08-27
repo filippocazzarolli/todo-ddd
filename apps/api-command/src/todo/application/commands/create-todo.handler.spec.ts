@@ -17,6 +17,13 @@ import { CreateTodoHandler } from './create-todo.handler';
 const GENERATED_ID = 'todo-generato';
 
 /**
+ * L'attore del comando. Qui non serve a verificare l'accesso — un todo che
+ * nasce non ha ancora un proprietario da confrontare — ma a diventarlo: e` la
+ * sola traduzione attore -> proprietario di tutto il modulo.
+ */
+const OWNER_ID = 'user-1';
+
+/**
  * Il tempo arriva dalla porta `Clock`, quindi il test lo fissa senza fake
  * timer. Componenti locali e non stringa ISO: `Expiration` interpreta data e
  * ora nel fuso del processo (vedi lo spec dell'aggregato).
@@ -87,7 +94,7 @@ describe('CreateTodoHandler', () => {
 
   it('restituisce l`id prodotto dal generatore, chiamandolo una volta sola', async () => {
     const todoId = await handler.execute(
-      new CreateTodoCommand('Comprare il latte'),
+      new CreateTodoCommand(OWNER_ID, 'Comprare il latte'),
     );
 
     expect(todoId).toBe(GENERATED_ID);
@@ -95,12 +102,13 @@ describe('CreateTodoHandler', () => {
   });
 
   it('persiste l`aggregato nello stato iniziale', async () => {
-    await handler.execute(new CreateTodoCommand('Comprare il latte'));
+    await handler.execute(new CreateTodoCommand(OWNER_ID, 'Comprare il latte'));
 
     expect(
       (await loadOrFail(repository, GENERATED_ID)).snapshot(),
     ).toStrictEqual({
       todoId: GENERATED_ID,
+      ownerId: OWNER_ID,
       title: 'Comprare il latte',
       status: 'todo',
       deleted: false,
@@ -113,11 +121,13 @@ describe('CreateTodoHandler', () => {
 
   it('non pre-elabora l`input: la normalizzazione resta nell`aggregato', async () => {
     await handler.execute(
-      new CreateTodoCommand('  Comprare il latte  ', '  intero  ', true, [
-        ' casa ',
-        'casa',
-        '',
-      ]),
+      new CreateTodoCommand(
+        OWNER_ID,
+        '  Comprare il latte  ',
+        '  intero  ',
+        true,
+        [' casa ', 'casa', ''],
+      ),
     );
 
     expect(
@@ -128,6 +138,30 @@ describe('CreateTodoHandler', () => {
       important: true,
       tags: ['casa'],
     });
+  });
+
+  it('assegna l`attore del comando come proprietario del todo', async () => {
+    // L'unica traduzione attore -> proprietario del modulo: negli altri
+    // handler l'attore serve solo a verificare l'accesso.
+    await handler.execute(
+      new CreateTodoCommand('user-42', 'Comprare il latte'),
+    );
+
+    expect((await loadOrFail(repository, GENERATED_ID)).ownerId).toBe(
+      'user-42',
+    );
+  });
+
+  it('non verifica che l`utente esista: il vincolo sta in persistenza', async () => {
+    // `TodoOwnerNotFoundError` e` dichiarato dalla porta ma nessun adapter lo
+    // solleva: finche` la persistenza e` in memoria, un todo orfano e`
+    // rappresentabile. L'handler non interroga `UserRepository` di proposito,
+    // per non accoppiare i due bounded context sul lato write.
+    await expect(
+      handler.execute(
+        new CreateTodoCommand('utente-inesistente', 'Comprare il latte'),
+      ),
+    ).resolves.toBe(GENERATED_ID);
   });
 
   it('pubblica TodoCreatedEvent sull`EventBus', async () => {
@@ -144,12 +178,13 @@ describe('CreateTodoHandler', () => {
         return [];
       });
 
-    await handler.execute(new CreateTodoCommand('Comprare il latte'));
+    await handler.execute(new CreateTodoCommand(OWNER_ID, 'Comprare il latte'));
 
     expect(publishAll).toHaveBeenCalledTimes(1);
     expect(published).toStrictEqual([
       new TodoCreatedEvent(
         GENERATED_ID,
+        OWNER_ID,
         'Comprare il latte',
         false,
         [],
@@ -162,7 +197,7 @@ describe('CreateTodoHandler', () => {
     const write = jest.spyOn(repository, 'add');
     const publishAll = jest.spyOn(eventBus, 'publishAll');
 
-    await handler.execute(new CreateTodoCommand('Comprare il latte'));
+    await handler.execute(new CreateTodoCommand(OWNER_ID, 'Comprare il latte'));
 
     expect(firstCallOrder(write)).toBeLessThan(firstCallOrder(publishAll));
   });
@@ -171,9 +206,9 @@ describe('CreateTodoHandler', () => {
     const write = jest.spyOn(repository, 'add');
     const publishAll = jest.spyOn(eventBus, 'publishAll');
 
-    await expect(handler.execute(new CreateTodoCommand('   '))).rejects.toThrow(
-      TodoTitleRequiredError,
-    );
+    await expect(
+      handler.execute(new CreateTodoCommand(OWNER_ID, '   ')),
+    ).rejects.toThrow(TodoTitleRequiredError);
 
     expect(write).not.toHaveBeenCalled();
     expect(publishAll).not.toHaveBeenCalled();
@@ -182,10 +217,17 @@ describe('CreateTodoHandler', () => {
 
   it('passa la scadenza all`aggregato senza comporla né validarla', async () => {
     await handler.execute(
-      new CreateTodoCommand('Comprare il latte', undefined, undefined, [], {
-        date: '2026-01-15',
-        time: '11:30',
-      }),
+      new CreateTodoCommand(
+        OWNER_ID,
+        'Comprare il latte',
+        undefined,
+        undefined,
+        [],
+        {
+          date: '2026-01-15',
+          time: '11:30',
+        },
+      ),
     );
 
     const todo = await loadOrFail(repository, GENERATED_ID);
@@ -200,10 +242,17 @@ describe('CreateTodoHandler', () => {
 
     await expect(
       handler.execute(
-        new CreateTodoCommand('Comprare il latte', undefined, undefined, [], {
-          date: '2026-01-15',
-          time: '09:00',
-        }),
+        new CreateTodoCommand(
+          OWNER_ID,
+          'Comprare il latte',
+          undefined,
+          undefined,
+          [],
+          {
+            date: '2026-01-15',
+            time: '09:00',
+          },
+        ),
       ),
     ).rejects.toThrow(TodoExpirationInPastError);
 
@@ -218,7 +267,7 @@ describe('CreateTodoHandler', () => {
      * fallirebbe su `no-unsafe-assignment` (max-warnings 0).
      */
     const todoId: string = await commandBus.execute(
-      new CreateTodoCommand('Comprare il latte'),
+      new CreateTodoCommand(OWNER_ID, 'Comprare il latte'),
     );
 
     expect(todoId).toBe(GENERATED_ID);

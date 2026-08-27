@@ -7,7 +7,15 @@ import { Command } from '@nestjs/cqrs';
  * persistenza, e il comando esprime l'intenzione dell'utente.
  */
 export class DeleteTodoCommand extends Command<void> {
-  constructor(public readonly todoId: string) {
+  constructor(
+    /**
+     * Chi esegue il comando, dal contesto di autenticazione e mai dal body:
+     * vedi `CreateTodoCommand`. Qui non assegna niente, serve a `loadTodo` per
+     * verificare che l'attore sia il proprietario del todo.
+     */
+    public readonly actorId: string,
+    public readonly todoId: string,
+  ) {
     super();
   }
 }

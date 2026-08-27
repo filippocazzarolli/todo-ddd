@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
 
+import { Actor } from '../../shared/presentation/actor.decorator';
 import { CreateTodoCommand } from '../application/commands/create-todo.command';
 import { DeleteTodoCommand } from '../application/commands/delete-todo.command';
 import { MarkTodoAsDoneCommand } from '../application/commands/mark-todo-as-done.command';
@@ -30,6 +31,10 @@ import { TODO_VALIDATION } from './todo-validation';
  * regola, nessun accesso al repository, nessun `Todo` importato — il
  * controller non sa nemmeno che esiste un aggregato. È il `CommandBus` a
  * trovare l'handler, quindi le rotte non sanno nemmeno chi le serve.
+ *
+ * L'attore arriva da `@Actor()` e mai dal body: nessun DTO di questo modulo ha
+ * un campo con l'identità di chi scrive, perché sarebbe un campo che il client
+ * controlla. Ogni rotta lo prende, anche quelle senza body.
  *
  * Rotte per intenzione e non per stato della risorsa: `POST /:id/done` e
  * `POST /:id/reopen` invece di un `PUT /:id/done` con il body a `true`. Un
@@ -49,9 +54,13 @@ export class TodoController {
    * un body in uscita.
    */
   @Post()
-  async create(@Body() body: CreateTodoBody): Promise<{ todoId: string }> {
+  async create(
+    @Actor() actorId: string,
+    @Body() body: CreateTodoBody,
+  ): Promise<{ todoId: string }> {
     const todoId = await this.commands.execute(
       new CreateTodoCommand(
+        actorId,
         body.title,
         body.description,
         body.important,
@@ -75,22 +84,31 @@ export class TodoController {
   @Patch(':todoId')
   @HttpCode(HttpStatus.NO_CONTENT)
   async update(
+    @Actor() actorId: string,
     @Param('todoId') todoId: string,
     @Body() body: UpdateTodoBody,
   ): Promise<void> {
-    await this.commands.execute(new UpdateTodoCommand(todoId, { ...body }));
+    await this.commands.execute(
+      new UpdateTodoCommand(actorId, todoId, { ...body }),
+    );
   }
 
   @Post(':todoId/done')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async markAsDone(@Param('todoId') todoId: string): Promise<void> {
-    await this.commands.execute(new MarkTodoAsDoneCommand(todoId));
+  async markAsDone(
+    @Actor() actorId: string,
+    @Param('todoId') todoId: string,
+  ): Promise<void> {
+    await this.commands.execute(new MarkTodoAsDoneCommand(actorId, todoId));
   }
 
   @Post(':todoId/reopen')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async reopen(@Param('todoId') todoId: string): Promise<void> {
-    await this.commands.execute(new ReopenTodoCommand(todoId));
+  async reopen(
+    @Actor() actorId: string,
+    @Param('todoId') todoId: string,
+  ): Promise<void> {
+    await this.commands.execute(new ReopenTodoCommand(actorId, todoId));
   }
 
   /**
@@ -99,7 +117,10 @@ export class TodoController {
    */
   @Delete(':todoId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async delete(@Param('todoId') todoId: string): Promise<void> {
-    await this.commands.execute(new DeleteTodoCommand(todoId));
+  async delete(
+    @Actor() actorId: string,
+    @Param('todoId') todoId: string,
+  ): Promise<void> {
+    await this.commands.execute(new DeleteTodoCommand(actorId, todoId));
   }
 }

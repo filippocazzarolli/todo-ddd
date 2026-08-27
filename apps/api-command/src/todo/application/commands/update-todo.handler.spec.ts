@@ -5,6 +5,7 @@ import { Todo } from '../../domain/aggregates/todo.aggregate';
 import {
   TodoDeletedError,
   TodoExpirationInPastError,
+  TodoNotOwnedError,
   TodoTitleRequiredError,
 } from '../../domain/errors/todo.errors';
 import { TodoUpdatedEvent } from '../../domain/events/todo-updated.event';
@@ -16,6 +17,12 @@ import { UpdateTodoCommand } from './update-todo.command';
 import { UpdateTodoHandler } from './update-todo.handler';
 
 const TODO_ID = 'todo-1';
+
+/** Il proprietario del todo seminato: l'attore legittimo dei comandi. */
+const OWNER_ID = 'user-1';
+
+/** Un attore che non possiede il todo: deve essere respinto da `loadTodo`. */
+const OTHER_ID = 'user-2';
 
 /** Componenti locali, non stringa ISO: vedi lo spec dell'aggregato. */
 const NOW = new Date(2026, 0, 15, 10, 30);
@@ -34,6 +41,7 @@ describe('UpdateTodoHandler', () => {
   async function seed(mutate?: (todo: Todo) => void): Promise<void> {
     const todo = Todo.create({
       todoId: TODO_ID,
+      ownerId: OWNER_ID,
       title: 'Comprare il latte',
       description: 'intero',
       tags: ['casa'],
@@ -84,7 +92,7 @@ describe('UpdateTodoHandler', () => {
     await seed();
 
     await handler.execute(
-      new UpdateTodoCommand(TODO_ID, {
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, {
         title: 'Comprare il pane',
         important: true,
       }),
@@ -92,6 +100,7 @@ describe('UpdateTodoHandler', () => {
 
     expect((await loadOrFail(TODO_ID)).snapshot()).toStrictEqual({
       todoId: TODO_ID,
+      ownerId: OWNER_ID,
       title: 'Comprare il pane',
       status: 'todo',
       deleted: false,
@@ -106,7 +115,7 @@ describe('UpdateTodoHandler', () => {
     await seed();
 
     await handler.execute(
-      new UpdateTodoCommand(TODO_ID, {
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, {
         title: '  Comprare il pane  ',
         tags: [' ufficio ', 'ufficio', ''],
       }),
@@ -135,14 +144,14 @@ describe('UpdateTodoHandler', () => {
       });
 
     await handler.execute(
-      new UpdateTodoCommand(TODO_ID, {
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, {
         title: 'Comprare il pane',
         description: 'intero',
       }),
     );
 
     expect(published).toStrictEqual([
-      new TodoUpdatedEvent(TODO_ID, { title: 'Comprare il pane' }),
+      new TodoUpdatedEvent(TODO_ID, OWNER_ID, { title: 'Comprare il pane' }),
     ]);
   });
 
@@ -160,7 +169,7 @@ describe('UpdateTodoHandler', () => {
     });
 
     await handler.execute(
-      new UpdateTodoCommand(TODO_ID, { title: 'Comprare il pane' }),
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, { title: 'Comprare il pane' }),
     );
 
     expect(calls).toStrictEqual(['update', 'publishAll']);
@@ -170,7 +179,7 @@ describe('UpdateTodoHandler', () => {
     await seed();
 
     await handler.execute(
-      new UpdateTodoCommand(TODO_ID, { expiration: FUTURE }),
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, { expiration: FUTURE }),
     );
 
     expect((await loadOrFail(TODO_ID)).expiration?.toString()).toBe(
@@ -182,7 +191,9 @@ describe('UpdateTodoHandler', () => {
   it('rimuove la scadenza con null', async () => {
     await seed((todo) => todo.update({ now: NOW, expiration: FUTURE }));
 
-    await handler.execute(new UpdateTodoCommand(TODO_ID, { expiration: null }));
+    await handler.execute(
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, { expiration: null }),
+    );
 
     expect((await loadOrFail(TODO_ID)).expiration).toBeUndefined();
   });
@@ -199,7 +210,7 @@ describe('UpdateTodoHandler', () => {
       });
 
     await handler.execute(
-      new UpdateTodoCommand(TODO_ID, { title: 'Comprare il latte' }),
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, { title: 'Comprare il latte' }),
     );
 
     expect(published).toStrictEqual([]);
@@ -210,7 +221,9 @@ describe('UpdateTodoHandler', () => {
 
     await expect(
       handler.execute(
-        new UpdateTodoCommand('inesistente', { title: 'Comprare il pane' }),
+        new UpdateTodoCommand(OWNER_ID, 'inesistente', {
+          title: 'Comprare il pane',
+        }),
       ),
     ).rejects.toThrow(TodoNotFoundError);
 
@@ -233,7 +246,7 @@ describe('UpdateTodoHandler', () => {
       const publishAll = jest.spyOn(eventBus, 'publishAll');
 
       await expect(
-        handler.execute(new UpdateTodoCommand(TODO_ID, fields)),
+        handler.execute(new UpdateTodoCommand(OWNER_ID, TODO_ID, fields)),
       ).rejects.toThrow(expected);
 
       expect(write).not.toHaveBeenCalled();
@@ -250,16 +263,50 @@ describe('UpdateTodoHandler', () => {
 
     await expect(
       handler.execute(
-        new UpdateTodoCommand(TODO_ID, { title: 'Comprare il pane' }),
+        new UpdateTodoCommand(OWNER_ID, TODO_ID, { title: 'Comprare il pane' }),
       ),
     ).rejects.toThrow(TodoDeletedError);
+  });
+
+  /*
+   * L'autorizzazione e` verificata da `loadTodo`, non da questo handler: il
+   * test sta comunque qui perche` cio` che si vuole provare e` che *questo*
+   * handler passi l'attore.
+   */
+  it('rifiuta un attore che non e` il proprietario, senza scrivere ne` pubblicare', async () => {
+    await seed();
+    const write = jest.spyOn(repository, 'update');
+    const publishAll = jest.spyOn(eventBus, 'publishAll');
+
+    await expect(
+      handler.execute(
+        new UpdateTodoCommand(OTHER_ID, TODO_ID, { title: 'Comprare il pane' }),
+      ),
+    ).rejects.toThrow(new TodoNotOwnedError(TODO_ID, OTHER_ID));
+
+    expect(write).not.toHaveBeenCalled();
+    expect(publishAll).not.toHaveBeenCalled();
+  });
+
+  it('rifiuta prima di validare i campi: l`accesso viene prima del contenuto', async () => {
+    // Scadenza nel passato *e* attore sbagliato: vince il secondo, perche`
+    // `loadTodo` corre prima che `Todo.update` veda l'input.
+    await seed();
+
+    await expect(
+      handler.execute(
+        new UpdateTodoCommand(OTHER_ID, TODO_ID, {
+          expiration: { date: '2020-01-01', time: '10:00' },
+        }),
+      ),
+    ).rejects.toThrow(TodoNotOwnedError);
   });
 
   it('è raggiungibile dal CommandBus con le classi astratte come token DI', async () => {
     await seed();
 
     await commandBus.execute(
-      new UpdateTodoCommand(TODO_ID, { title: 'Comprare il pane' }),
+      new UpdateTodoCommand(OWNER_ID, TODO_ID, { title: 'Comprare il pane' }),
     );
 
     expect((await loadOrFail(TODO_ID)).snapshot().title).toBe(

@@ -41,3 +41,27 @@ export class TodoNoLongerExistsError extends TodoPersistenceError {
     super(`Il todo ${todoId} non esiste più`);
   }
 }
+
+/**
+ * `add` con un `ownerId` che non corrisponde a nessun utente.
+ *
+ * **Nessun adapter lo solleva oggi**: è un contratto dichiarato in anticipo.
+ * L'esistenza del proprietario non è un invariante dell'aggregato `Todo` —
+ * verificarla richiede di guardare fuori dal suo confine transazionale,
+ * esattamente come l'unicità dell'email che `User` si rifiuta di controllare.
+ * L'unico posto in cui la verifica è davvero atomica è il vincolo di chiave
+ * esterna del database, quindi il fallimento appartiene alla porta di
+ * persistenza. `InMemoryTodoRepository` non vede gli utenti e non può
+ * verificarlo: finché la persistenza è in memoria, un todo orfano è
+ * rappresentabile.
+ *
+ * L'alternativa — l'handler che interroga `UserRepository` prima di creare —
+ * è stata scartata: accoppierebbe i due bounded context sul lato write per una
+ * verifica che resta comunque non atomica, dato che l'utente può essere
+ * cancellato subito dopo il controllo.
+ */
+export class TodoOwnerNotFoundError extends TodoPersistenceError {
+  constructor(public readonly ownerId: string) {
+    super(`L'utente ${ownerId} non esiste`);
+  }
+}

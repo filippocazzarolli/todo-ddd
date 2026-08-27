@@ -24,7 +24,12 @@ export class DeleteTodoHandler implements ICommandHandler<DeleteTodoCommand> {
   ) {}
 
   async execute(command: DeleteTodoCommand): Promise<void> {
-    const todo = await loadTodo(this.todos, this.publisher, command.todoId);
+    const todo = await loadTodo(
+      this.todos,
+      this.publisher,
+      command.todoId,
+      command.actorId,
+    );
 
     todo.delete();
 

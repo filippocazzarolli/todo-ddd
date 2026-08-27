@@ -35,6 +35,13 @@ export class CreateTodoHandler implements ICommandHandler<CreateTodoCommand> {
     const todo = this.publisher.mergeObjectContext(
       Todo.create({
         todoId: this.todoIds.next(),
+        /*
+         * Chi crea un todo ne è il proprietario: è qui che l'attore del
+         * comando diventa l'`ownerId` dell'aggregato. Nessun altro handler fa
+         * questa traduzione — gli altri usano l'attore solo per verificare
+         * l'accesso a un proprietario già assegnato.
+         */
+        ownerId: command.actorId,
         now: this.clock.now(),
         title: command.title,
         description: command.description,

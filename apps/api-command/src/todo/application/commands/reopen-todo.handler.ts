@@ -16,7 +16,12 @@ export class ReopenTodoHandler implements ICommandHandler<ReopenTodoCommand> {
   ) {}
 
   async execute(command: ReopenTodoCommand): Promise<void> {
-    const todo = await loadTodo(this.todos, this.publisher, command.todoId);
+    const todo = await loadTodo(
+      this.todos,
+      this.publisher,
+      command.todoId,
+      command.actorId,
+    );
 
     todo.reopen();
 

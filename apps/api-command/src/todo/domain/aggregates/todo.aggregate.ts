@@ -4,6 +4,7 @@ import {
   TodoAlreadyDoneError,
   TodoDeletedError,
   TodoNotDoneError,
+  TodoNotOwnedError,
   TodoTitleRequiredError,
 } from '../errors/todo.errors';
 import { TodoCreatedEvent } from '../events/todo-created.event';
@@ -39,6 +40,27 @@ export type TodoStatus = 'todo' | 'done';
  */
 export interface TodoProps {
   todoId: string;
+  /**
+   * Proprietario del todo: il riferimento a un *altro* aggregato, tenuto per
+   * identità e non per oggetto.
+   *
+   * È una `string` e non un `User` per tre ragioni che valgono insieme: un
+   * aggregato annidato allargherebbe il confine transazionale a due aggregati,
+   * `todo/` importerebbe da `user/` accoppiando due bounded context che oggi
+   * si ignorano, e `TodoProps` è anche il contratto verso la persistenza — un
+   * id è una colonna, un aggregato no.
+   *
+   * `ownerId` e non `userId` perché è il *ruolo* che quell'identità ha qui
+   * dentro: questo modulo non conosce l'aggregato `User`, conosce
+   * un'identità esterna che possiede il todo.
+   *
+   * Non compare in `UpdateTodoProps`: il proprietario si assegna alla
+   * creazione e non cambia. Trasferire un todo ha precondizioni proprie (il
+   * nuovo proprietario esiste? il vecchio perde l'accesso?) e vorrà un comando
+   * dedicato con il suo evento, non un campo in un update parziale — la stessa
+   * ragione per cui l'email non è in `UpdateUserProps`.
+   */
+  ownerId: string;
   title: string;
   status: TodoStatus;
   /**
@@ -67,6 +89,16 @@ export interface CreateTodoProps {
    * genera ID, così `create` resta una funzione pura e testabile senza mock.
    */
   todoId: string;
+  /**
+   * Proprietario, deciso dal chiamante come il `todoId`.
+   *
+   * Obbligatorio: un todo senza proprietario non è un todo incompleto, è un
+   * todo che non esiste. Che l'utente citato *esista davvero* non è invece
+   * un'invariante di questo aggregato — verificarlo richiede di guardare fuori
+   * dal suo confine, quindi appartiene al vincolo di chiave esterna in
+   * persistenza (vedi `TodoOwnerNotFoundError`).
+   */
+  ownerId: string;
   title: string;
   /**
    * Istante di riferimento, iniettato come il `todoId`: serve a `Expiration`
@@ -119,6 +151,12 @@ export interface UpdateTodoProps {
  *
  * Ciclo di vita: `todo` <-> `done`, con `deleted` come stato terminale
  * ortogonale che congela ogni ulteriore transizione.
+ *
+ * Ha un proprietario (`ownerId`), riferito per identità come vuole la regola
+ * sui riferimenti tra aggregati. L'ownership è un dato dell'aggregato *e* la
+ * base di una regola di accesso (`ensureOwnedBy`), ma non di un invariante
+ * sull'esistenza del proprietario: quella verifica sta fuori dal confine
+ * transazionale e appartiene alla persistenza.
  */
 export class Todo extends AggregateRoot {
   private constructor(private props: TodoProps) {
@@ -146,6 +184,7 @@ export class Todo extends AggregateRoot {
 
     const todo = new Todo({
       todoId: props.todoId,
+      ownerId: props.ownerId,
       title,
       status: 'todo',
       deleted: false,
@@ -158,6 +197,7 @@ export class Todo extends AggregateRoot {
     todo.apply(
       new TodoCreatedEvent(
         todo.props.todoId,
+        todo.props.ownerId,
         title,
         important,
         tags,
@@ -269,7 +309,9 @@ export class Todo extends AggregateRoot {
       return;
     }
 
-    this.apply(new TodoUpdatedEvent(this.props.todoId, changes));
+    this.apply(
+      new TodoUpdatedEvent(this.props.todoId, this.props.ownerId, changes),
+    );
   }
 
   /**
@@ -286,7 +328,9 @@ export class Todo extends AggregateRoot {
     }
 
     this.props.status = 'done';
-    this.apply(new TodoMarkedAsDoneEvent(this.props.todoId));
+    this.apply(
+      new TodoMarkedAsDoneEvent(this.props.todoId, this.props.ownerId),
+    );
   }
 
   /**
@@ -304,7 +348,7 @@ export class Todo extends AggregateRoot {
     }
 
     this.props.status = 'todo';
-    this.apply(new TodoReopenedEvent(this.props.todoId));
+    this.apply(new TodoReopenedEvent(this.props.todoId, this.props.ownerId));
   }
 
   /**
@@ -319,11 +363,15 @@ export class Todo extends AggregateRoot {
     this.ensureNotDeleted();
 
     this.props.deleted = true;
-    this.apply(new TodoDeletedEvent(this.props.todoId));
+    this.apply(new TodoDeletedEvent(this.props.todoId, this.props.ownerId));
   }
 
   get todoId(): string {
     return this.props.todoId;
+  }
+
+  get ownerId(): string {
+    return this.props.ownerId;
   }
 
   get status(): TodoStatus {
@@ -341,6 +389,32 @@ export class Todo extends AggregateRoot {
   /** `undefined` se il todo non ha scadenza: è un campo opzionale. */
   get expiration(): Expiration | undefined {
     return this.props.expiration;
+  }
+
+  /**
+   * Solleva `TodoNotOwnedError` se l'attore non è il proprietario.
+   *
+   * È l'unico controllo pubblico dell'aggregato, e la ragione è dove va
+   * invocato: **in `loadTodo`**, subito dopo il caricamento e insieme al
+   * `mergeObjectContext`. La regola vive qui perché è verificabile con i soli
+   * dati dell'aggregato; l'invocazione sta là perché un controllo di
+   * autorizzazione dimenticato fallisce in silenzio, esattamente come un merge
+   * dimenticato — e la cura è la stessa, renderlo non dimenticabile mettendolo
+   * nel punto obbligato del caricamento.
+   *
+   * L'alternativa scartata era passare l'attore a ogni metodo di comando
+   * (`markAsDone(actorId)`, `update(props, actorId)`): ugualmente sicura, ma
+   * mescola *chi chiede* e *cosa chiede* in cinque firme.
+   *
+   * Viene prima di `ensureNotDeleted`, per posizione nel flusso: chi non
+   * possiede il todo non deve poter distinguere un todo cancellato da uno
+   * vivo. Per la stessa ragione l'ownership non è verificata in `create` — lì
+   * il proprietario *è* l'attore per costruzione.
+   */
+  ensureOwnedBy(actorId: string): void {
+    if (actorId !== this.props.ownerId) {
+      throw new TodoNotOwnedError(this.props.todoId, actorId);
+    }
   }
 
   /**

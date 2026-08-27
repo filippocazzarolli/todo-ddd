@@ -13,6 +13,12 @@ import { TodoController } from './todo.controller';
 import { TODO_VALIDATION } from './todo-validation';
 
 const TODO_ID = 'todo-1';
+
+/**
+ * L'attore arriva da `@Actor()`, non dal body: qui il decorator e` gia` stato
+ * risolto e il controller lo riceve come primo parametro.
+ */
+const ACTOR_ID = 'user-1';
 const EXPIRATION = { date: '2026-01-15', time: '11:30' };
 
 describe('TodoController', () => {
@@ -37,13 +43,16 @@ describe('TodoController', () => {
     it('costruisce il command e restituisce l`id prodotto dall`handler', async () => {
       commands.execute.mockResolvedValue('todo-generato');
 
-      await expect(controller.create(createBody())).resolves.toStrictEqual({
+      await expect(
+        controller.create(ACTOR_ID, createBody()),
+      ).resolves.toStrictEqual({
         todoId: 'todo-generato',
       });
     });
 
     it('passa i campi nell`ordine posizionale del command', async () => {
       await controller.create(
+        ACTOR_ID,
         createBody({
           description: 'intero',
           important: true,
@@ -54,6 +63,7 @@ describe('TodoController', () => {
 
       expect(commands.execute).toHaveBeenCalledWith(
         new CreateTodoCommand(
+          ACTOR_ID,
           'Comprare il latte',
           'intero',
           true,
@@ -64,10 +74,11 @@ describe('TodoController', () => {
     });
 
     it('non inventa default per i campi assenti: li decide l`aggregato', async () => {
-      await controller.create(createBody());
+      await controller.create(ACTOR_ID, createBody());
 
       expect(commands.execute).toHaveBeenCalledWith(
         new CreateTodoCommand(
+          ACTOR_ID,
           'Comprare il latte',
           undefined,
           undefined,
@@ -85,10 +96,10 @@ describe('TodoController', () => {
         description: null,
       });
 
-      await controller.update(TODO_ID, body);
+      await controller.update(ACTOR_ID, TODO_ID, body);
 
       expect(commands.execute).toHaveBeenCalledWith(
-        new UpdateTodoCommand(TODO_ID, {
+        new UpdateTodoCommand(ACTOR_ID, TODO_ID, {
           title: 'Comprare il pane',
           description: null,
           important: undefined,
@@ -101,7 +112,7 @@ describe('TodoController', () => {
     it('copia il body in un oggetto piano: il command resta serializzabile', async () => {
       const body = Object.assign(new UpdateTodoBody(), { title: 'X' });
 
-      await controller.update(TODO_ID, body);
+      await controller.update(ACTOR_ID, TODO_ID, body);
 
       const [command] = commands.execute.mock.calls[0] as [UpdateTodoCommand];
 
@@ -115,27 +126,27 @@ describe('TodoController', () => {
    * controller con una stringa costringerebbe a un cast, e un cast in un test
    * di traduzione nasconde proprio l'errore che il test dovrebbe trovare.
    */
-  it('markAsDone costruisce il command con il solo todoId', async () => {
-    await controller.markAsDone(TODO_ID);
+  it('markAsDone costruisce il command con attore e todoId', async () => {
+    await controller.markAsDone(ACTOR_ID, TODO_ID);
 
     expect(commands.execute).toHaveBeenCalledWith(
-      new MarkTodoAsDoneCommand(TODO_ID),
+      new MarkTodoAsDoneCommand(ACTOR_ID, TODO_ID),
     );
   });
 
-  it('reopen costruisce il command con il solo todoId', async () => {
-    await controller.reopen(TODO_ID);
+  it('reopen costruisce il command con attore e todoId', async () => {
+    await controller.reopen(ACTOR_ID, TODO_ID);
 
     expect(commands.execute).toHaveBeenCalledWith(
-      new ReopenTodoCommand(TODO_ID),
+      new ReopenTodoCommand(ACTOR_ID, TODO_ID),
     );
   });
 
-  it('delete costruisce il command con il solo todoId', async () => {
-    await controller.delete(TODO_ID);
+  it('delete costruisce il command con attore e todoId', async () => {
+    await controller.delete(ACTOR_ID, TODO_ID);
 
     expect(commands.execute).toHaveBeenCalledWith(
-      new DeleteTodoCommand(TODO_ID),
+      new DeleteTodoCommand(ACTOR_ID, TODO_ID),
     );
   });
 });

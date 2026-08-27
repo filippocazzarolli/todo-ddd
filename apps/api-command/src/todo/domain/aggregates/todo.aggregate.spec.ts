@@ -5,6 +5,7 @@ import {
   TodoExpirationInPastError,
   TodoExpirationInvalidError,
   TodoNotDoneError,
+  TodoNotOwnedError,
   TodoTitleRequiredError,
 } from '../errors/todo.errors';
 import { TodoCreatedEvent } from '../events/todo-created.event';
@@ -22,6 +23,15 @@ import { CreateTodoProps, Todo, TodoProps } from './todo.aggregate';
 const TODO_ID = 'todo-1';
 
 /**
+ * Il proprietario arriva dall'esterno come il `todoId`: per il dominio è solo
+ * un'identità opaca, e nessun test costruisce un `User` per averla.
+ */
+const OWNER_ID = 'user-1';
+
+/** Un attore che non possiede il todo, per i test su `ensureOwnedBy`. */
+const OTHER_ID = 'user-2';
+
+/**
  * Anche `now` arriva dall'esterno (porta `Clock`), quindi è un valore fisso.
  * Costruito da componenti locali, non da stringa ISO: `Expiration` interpreta
  * data e ora nel fuso del processo, e confrontare i due nello stesso fuso
@@ -35,6 +45,7 @@ const FUTURE = { date: '2026-01-15', time: '11:30' };
 function createProps(overrides: Partial<CreateTodoProps> = {}) {
   return {
     todoId: TODO_ID,
+    ownerId: OWNER_ID,
     title: 'Comprare il latte',
     now: NOW,
     ...overrides,
@@ -44,6 +55,7 @@ function createProps(overrides: Partial<CreateTodoProps> = {}) {
 function doneState(overrides: Partial<TodoProps> = {}) {
   return {
     todoId: TODO_ID,
+    ownerId: OWNER_ID,
     title: 'Comprare il latte',
     status: 'done',
     deleted: false,
@@ -58,6 +70,7 @@ describe('Todo', () => {
 
       expect(todo.snapshot()).toStrictEqual({
         todoId: TODO_ID,
+        ownerId: OWNER_ID,
         title: 'Comprare il latte',
         status: 'todo',
         deleted: false,
@@ -86,6 +99,7 @@ describe('Todo', () => {
       expect(todo.getUncommittedEvents()).toStrictEqual([
         new TodoCreatedEvent(
           TODO_ID,
+          OWNER_ID,
           'Comprare il latte',
           true,
           ['casa'],
@@ -171,6 +185,7 @@ describe('Todo', () => {
       expect(todo.getUncommittedEvents()).toStrictEqual([
         new TodoCreatedEvent(
           TODO_ID,
+          OWNER_ID,
           'Comprare il latte',
           false,
           [],
@@ -259,6 +274,7 @@ describe('Todo', () => {
 
       expect(todo.snapshot()).toStrictEqual({
         todoId: TODO_ID,
+        ownerId: OWNER_ID,
         title: 'Comprare il latte',
         status: 'done',
         deleted: false,
@@ -325,6 +341,7 @@ describe('Todo', () => {
     function openState(overrides: Partial<TodoProps> = {}) {
       return {
         todoId: TODO_ID,
+        ownerId: OWNER_ID,
         title: 'Comprare il latte',
         status: 'todo',
         deleted: false,
@@ -355,6 +372,7 @@ describe('Todo', () => {
 
       expect(todo.snapshot()).toStrictEqual({
         todoId: TODO_ID,
+        ownerId: OWNER_ID,
         title: 'Comprare il pane',
         status: 'todo',
         deleted: false,
@@ -364,7 +382,7 @@ describe('Todo', () => {
         tags: ['casa'],
       });
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, {
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, {
           title: 'Comprare il pane',
           description: 'integrale',
           important: true,
@@ -379,7 +397,7 @@ describe('Todo', () => {
       todo.update({ now: NOW, title: 'Comprare il pane', important: true });
 
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, { title: 'Comprare il pane' }),
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, { title: 'Comprare il pane' }),
       ]);
     });
 
@@ -449,7 +467,7 @@ describe('Todo', () => {
 
       expect(todo.snapshot().description).toBeUndefined();
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, { description: null }),
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, { description: null }),
       ]);
     });
 
@@ -468,7 +486,7 @@ describe('Todo', () => {
 
       expect(todo.snapshot().tags).toStrictEqual(['ufficio']);
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, { tags: ['ufficio'] }),
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, { tags: ['ufficio'] }),
       ]);
     });
 
@@ -479,7 +497,7 @@ describe('Todo', () => {
 
       expect(todo.snapshot().tags).toStrictEqual([]);
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, { tags: [] }),
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, { tags: [] }),
       ]);
     });
 
@@ -498,7 +516,7 @@ describe('Todo', () => {
 
       expect(todo.expiration?.toString()).toBe('2026-01-15 11:30');
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, {
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, {
           expiration: new Date(2026, 0, 15, 11, 30).toISOString(),
         }),
       ]);
@@ -511,7 +529,7 @@ describe('Todo', () => {
 
       expect(todo.expiration).toBeUndefined();
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoUpdatedEvent(TODO_ID, { expiration: null }),
+        new TodoUpdatedEvent(TODO_ID, OWNER_ID, { expiration: null }),
       ]);
     });
 
@@ -594,12 +612,13 @@ describe('Todo', () => {
       expect(todo.getUncommittedEvents()).toStrictEqual([
         new TodoCreatedEvent(
           TODO_ID,
+          OWNER_ID,
           'Comprare il latte',
           false,
           [],
           undefined,
         ),
-        new TodoMarkedAsDoneEvent(TODO_ID),
+        new TodoMarkedAsDoneEvent(TODO_ID, OWNER_ID),
       ]);
     });
 
@@ -609,7 +628,7 @@ describe('Todo', () => {
       todo.markAsDone();
 
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoMarkedAsDoneEvent(TODO_ID),
+        new TodoMarkedAsDoneEvent(TODO_ID, OWNER_ID),
       ]);
     });
 
@@ -662,7 +681,7 @@ describe('Todo', () => {
       todo.reopen();
 
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoReopenedEvent(TODO_ID),
+        new TodoReopenedEvent(TODO_ID, OWNER_ID),
       ]);
     });
 
@@ -677,14 +696,15 @@ describe('Todo', () => {
       expect(todo.getUncommittedEvents()).toStrictEqual([
         new TodoCreatedEvent(
           TODO_ID,
+          OWNER_ID,
           'Comprare il latte',
           false,
           [],
           undefined,
         ),
-        new TodoMarkedAsDoneEvent(TODO_ID),
-        new TodoReopenedEvent(TODO_ID),
-        new TodoMarkedAsDoneEvent(TODO_ID),
+        new TodoMarkedAsDoneEvent(TODO_ID, OWNER_ID),
+        new TodoReopenedEvent(TODO_ID, OWNER_ID),
+        new TodoMarkedAsDoneEvent(TODO_ID, OWNER_ID),
       ]);
     });
 
@@ -719,7 +739,7 @@ describe('Todo', () => {
       todo.delete();
 
       expect(todo.getUncommittedEvents()).toStrictEqual([
-        new TodoDeletedEvent(TODO_ID),
+        new TodoDeletedEvent(TODO_ID, OWNER_ID),
       ]);
     });
 
@@ -752,6 +772,82 @@ describe('Todo', () => {
       expect(() => todo.delete()).toThrow(TodoDeletedError);
       expect(todo.getUncommittedEvents()).toStrictEqual(eventsAfterDelete);
       expect(todo.snapshot().status).toBe('todo');
+    });
+  });
+
+  describe('ownership', () => {
+    it('assegna il proprietario ricevuto e lo espone', () => {
+      const todo = Todo.create(createProps({ ownerId: 'user-42' }));
+
+      expect(todo.ownerId).toBe('user-42');
+      expect(todo.snapshot().ownerId).toBe('user-42');
+    });
+
+    it('non valida il proprietario: la sua esistenza sta fuori dall`aggregato', () => {
+      // L'unico controllo possibile qui sarebbe guardare gli altri aggregati,
+      // cioe` fuori dal confine transazionale: il vincolo vive in persistenza
+      // (`TodoOwnerNotFoundError`), non in `create`.
+      expect(() =>
+        Todo.create(createProps({ ownerId: 'utente-inesistente' })),
+      ).not.toThrow();
+    });
+
+    it('ensureOwnedBy passa per il proprietario', () => {
+      const todo = Todo.create(createProps());
+
+      expect(() => todo.ensureOwnedBy(OWNER_ID)).not.toThrow();
+    });
+
+    it('ensureOwnedBy rifiuta chiunque altro con TodoNotOwnedError', () => {
+      const todo = Todo.create(createProps());
+
+      expect(() => todo.ensureOwnedBy(OTHER_ID)).toThrow(
+        new TodoNotOwnedError(TODO_ID, OTHER_ID),
+      );
+    });
+
+    it('espone la violazione come TodoDomainError', () => {
+      // Come per le altre invarianti: il filtro mappa la gerarchia.
+      const todo = Todo.create(createProps());
+
+      expect(() => todo.ensureOwnedBy(OTHER_ID)).toThrow(TodoDomainError);
+    });
+
+    it('confronta per identita` esatta, senza normalizzare', () => {
+      // Il dominio non sa come sono fatti gli id: se l'attore arriva sporco,
+      // il posto in cui pulirlo e` il confine HTTP, non qui.
+      const todo = Todo.create(createProps({ ownerId: 'user-1' }));
+
+      expect(() => todo.ensureOwnedBy(' user-1 ')).toThrow(TodoNotOwnedError);
+      expect(() => todo.ensureOwnedBy('USER-1')).toThrow(TodoNotOwnedError);
+    });
+
+    it('vale anche su un todo cancellato: e` un controllo indipendente', () => {
+      // `ensureOwnedBy` non e` mai preceduto da `ensureNotDeleted`, cosi` chi
+      // non possiede il todo non distingue un todo cancellato da uno vivo.
+      const todo = Todo.create(createProps());
+
+      todo.delete();
+
+      expect(() => todo.ensureOwnedBy(OTHER_ID)).toThrow(TodoNotOwnedError);
+      expect(() => todo.ensureOwnedBy(OWNER_ID)).not.toThrow();
+    });
+
+    it('sopravvive al rehydrate', () => {
+      const todo = Todo.rehydrate(doneState({ ownerId: 'user-7' }));
+
+      expect(todo.ownerId).toBe('user-7');
+      expect(() => todo.ensureOwnedBy('user-7')).not.toThrow();
+    });
+
+    it('non e` modificabile da update', () => {
+      // `UpdateTodoProps` non ha il campo, e nemmeno una chiave in piu` nel
+      // literal lo farebbe passare: qui si prova che lo stato non si muove.
+      const todo = Todo.create(createProps());
+
+      todo.update({ now: NOW, title: 'Comprare il pane' });
+
+      expect(todo.ownerId).toBe(OWNER_ID);
     });
   });
 

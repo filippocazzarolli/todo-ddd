@@ -12,8 +12,12 @@ import {
   TodoDeletedError,
   TodoDomainError,
   TodoNotDoneError,
+  TodoNotOwnedError,
 } from '../domain/errors/todo.errors';
-import { TodoPersistenceError } from '../domain/ports/todo.repository.errors';
+import {
+  TodoOwnerNotFoundError,
+  TodoPersistenceError,
+} from '../domain/ports/todo.repository.errors';
 
 /**
  * Traduce gli errori del modulo todo in risposte HTTP.
@@ -58,12 +62,33 @@ function statusOf(error: Error): HttpStatus {
     return HttpStatus.NOT_FOUND;
   }
 
+  /*
+   * Il todo esiste ma è di qualcun altro: 403, e non 404 per nasconderne
+   * l'esistenza. Il repo preferisce i segnali distinti, e con id UUIDv7 non
+   * enumerabili il 403 non regala niente di utile a chi tira a indovinare. Se
+   * il modello di minaccia cambiasse, la decisione si ribalta *qui*, in questa
+   * riga: il dominio continua a sollevare `TodoNotOwnedError` e non se ne
+   * accorge.
+   */
+  if (error instanceof TodoNotOwnedError) {
+    return HttpStatus.FORBIDDEN;
+  }
+
   if (
     error instanceof TodoAlreadyDoneError ||
     error instanceof TodoNotDoneError ||
     error instanceof TodoDeletedError
   ) {
     return HttpStatus.CONFLICT;
+  }
+
+  /*
+   * L'`ownerId` non corrisponde a nessun utente: 400 e non 409, perché non è
+   * una corsa persa ma un riferimento che non è mai stato valido. Va prima del
+   * controllo su `TodoPersistenceError`, di cui è sottoclasse.
+   */
+  if (error instanceof TodoOwnerNotFoundError) {
+    return HttpStatus.BAD_REQUEST;
   }
 
   /*

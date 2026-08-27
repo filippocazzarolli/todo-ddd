@@ -30,7 +30,14 @@ export abstract class TodoRepository {
   abstract findById(todoId: string): Promise<Todo | null>;
 
   /**
-   * Inserisce un aggregato nuovo. `TodoAlreadyExistsError` se l'id esiste già.
+   * Inserisce un aggregato nuovo.
+   *
+   * Due fallimenti dichiarati: `TodoAlreadyExistsError` se l'id esiste già, e
+   * `TodoOwnerNotFoundError` se l'`ownerId` non corrisponde a nessun utente.
+   * Il secondo è un contratto in anticipo — nessun adapter lo solleva finché
+   * la persistenza è in memoria — e sta qui e non nell'aggregato perché
+   * l'esistenza del proprietario si verifica solo guardando fuori dal confine
+   * del todo, cioè in un vincolo di chiave esterna.
    *
    * Distinto da `update` e non un upsert unico, perché un upsert cancella due
    * segnali che vale la pena sentire: l'inserimento di un id duplicato (che è

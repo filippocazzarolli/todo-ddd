@@ -8,15 +8,18 @@ import {
   TodoExpirationInPastError,
   TodoExpirationInvalidError,
   TodoNotDoneError,
+  TodoNotOwnedError,
   TodoTitleRequiredError,
 } from '../domain/errors/todo.errors';
 import {
   TodoAlreadyExistsError,
   TodoNoLongerExistsError,
+  TodoOwnerNotFoundError,
 } from '../domain/ports/todo.repository.errors';
 import { TodoErrorFilter } from './todo-error.filter';
 
 const TODO_ID = 'todo-1';
+const ACTOR_ID = 'user-2';
 
 /** Risposta express finta: `status` è concatenabile come l'originale. */
 function responseSpy() {
@@ -34,11 +37,13 @@ describe('TodoErrorFilter', () => {
 
   it.each([
     [new TodoNotFoundError(TODO_ID), HttpStatus.NOT_FOUND],
+    [new TodoNotOwnedError(TODO_ID, ACTOR_ID), HttpStatus.FORBIDDEN],
     [new TodoAlreadyDoneError(TODO_ID), HttpStatus.CONFLICT],
     [new TodoNotDoneError(TODO_ID), HttpStatus.CONFLICT],
     [new TodoDeletedError(TODO_ID), HttpStatus.CONFLICT],
     [new TodoAlreadyExistsError(TODO_ID), HttpStatus.CONFLICT],
     [new TodoNoLongerExistsError(TODO_ID), HttpStatus.CONFLICT],
+    [new TodoOwnerNotFoundError('user-9'), HttpStatus.BAD_REQUEST],
     [new TodoTitleRequiredError(), HttpStatus.BAD_REQUEST],
     [new TodoExpirationInvalidError('domani'), HttpStatus.BAD_REQUEST],
     [new TodoExpirationInPastError('2020-01-01 10:00'), HttpStatus.BAD_REQUEST],
@@ -62,6 +67,22 @@ describe('TodoErrorFilter', () => {
       statusCode: HttpStatus.CONFLICT,
       error: 'TodoAlreadyDoneError',
       message: `Il todo ${TODO_ID} è già stato completato`,
+    });
+  });
+
+  it('distingue il 403 dell`ownership dal 400 degli altri errori di dominio', () => {
+    // `TodoNotOwnedError` estende `TodoDomainError`, che di default e` 400:
+    // il controllo specifico deve venire prima, o l'accesso negato
+    // diventerebbe indistinguibile da un input malformato.
+    const { host, status, json } = responseSpy();
+
+    filter.catch(new TodoNotOwnedError(TODO_ID, ACTOR_ID), host);
+
+    expect(status).toHaveBeenCalledWith(HttpStatus.FORBIDDEN);
+    expect(json).toHaveBeenCalledWith({
+      statusCode: HttpStatus.FORBIDDEN,
+      error: 'TodoNotOwnedError',
+      message: `Il todo ${TODO_ID} non appartiene all'utente ${ACTOR_ID}`,
     });
   });
 
