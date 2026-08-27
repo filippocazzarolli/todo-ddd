@@ -1,160 +1,124 @@
-# Turborepo starter
-
-This Turborepo starter is maintained by the Turborepo core team.
-
-## Using this example
-
-Run the following command:
-
-```sh
-npx create-turbo@latest
-```
-
-## What's inside?
-
-This Turborepo includes the following packages/apps:
-
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `@next/eslint-plugin-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo build
-pnpm exec turbo build
-pnpm exec turbo build
-```
-
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-```
-
-### Develop
-
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
 # todo-ddd
+
+Monorepo Turborepo con un'applicazione di gestione todo modellata in **Domain-Driven Design**, su uno split **CQRS** in due servizi separati: `api-command` scrive, `api-query` legge.
+
+## Stato
+
+Il lato write è implementato; il lato read no.
+
+| Workspace          | Porta | Stato                                                              |
+| ------------------ | ----- | ------------------------------------------------------------------ |
+| `apps/api-command` | 3002  | Due moduli DDD completi: [`todo`](#i-moduli) e [`user`](#i-moduli) |
+| `apps/api-query`   | 3003  | Scaffold `nest new`, nessun read model                             |
+| `apps/web`         | 3000  | Landing page del template `create-turbo`, mai toccata              |
+| `apps/docs`        | 3001  | Landing page del template `create-turbo`, mai toccata              |
+
+Conseguenza da tenere presente: **gli eventi di dominio non escono dal processo**. Sono pubblicati sull'`EventBus` in-process di `@nestjs/cqrs` e nessuno è iscritto, quindi non esiste ancora un percorso command → query e nessuna proiezione si aggiorna.
+
+La persistenza è in memoria: ogni riavvio riparte da zero.
+
+## Avvio
+
+Servono **Node >= 24** e **pnpm 11.23.0** (`packageManager`). La toolchain gira anche su Node 22, ma pnpm emette un warning `Unsupported engine` a ogni comando. Non usare npm o yarn: i workspace usano il protocollo `workspace:*`.
+
+```sh
+pnpm install
+pnpm dev                              # tutte le app in watch
+pnpm turbo dev --filter=api-command   # solo il lato write
+```
+
+L'API di scrittura richiede l'header `x-user-id` su ogni rotta dei todo — è un **segnaposto**, non autenticazione (vedi il [README del modulo todo](apps/api-command/src/todo/README.md#lattore-al-confine-http)):
+
+```sh
+curl -X POST localhost:3002/todos \
+  -H 'content-type: application/json' \
+  -H 'x-user-id: user-1' \
+  -d '{"title":"Comprare il latte"}'
+```
+
+## Comandi
+
+Da root, tutti attraverso Turborepo, che rispetta il grafo delle dipendenze:
+
+```sh
+pnpm build          # build di tutti i workspace
+pnpm lint           # eslint (zero-tolerance: --max-warnings 0)
+pnpm check-types    # next typegen + tsc --noEmit
+pnpm format         # prettier --write su **/*.{ts,tsx,md}
+pnpm turbo test     # jest — solo le app Nest lo implementano
+```
+
+Per un singolo workspace, `--filter` accetta il `name` del `package.json`:
+
+```sh
+pnpm turbo lint --filter=api-command
+pnpm --filter api-command exec jest src/todo/domain
+```
+
+**`pnpm turbo test` non esegue gli e2e**: la config Jest di default copre solo `src/**`. Vanno lanciati a parte, e una rottura del confine HTTP non fa fallire nessun comando da root:
+
+```sh
+pnpm --filter api-command test:e2e
+```
+
+## Struttura
+
+`pnpm-workspace.yaml` include `apps/*` e `packages/*`.
+
+```
+apps/
+  api-command/      NestJS 11 — lato write: aggregati, comandi, eventi
+  api-query/        NestJS 11 — lato read (da fare)
+  web/ docs/        Next.js 16 — template create-turbo
+packages/
+  ui/                  @repo/ui — componenti React condivisi, senza build step
+  eslint-config/       @repo/eslint-config — flat config: base, next-js, react-internal, nest
+  typescript-config/   @repo/typescript-config — base, nextjs, react-library, nestjs
+```
+
+## L'architettura del lato write
+
+Ogni modulo di dominio in `api-command` ha gli stessi cinque layer, e le dipendenze puntano **solo verso `domain/`**: cancellando tutte le altre cartelle, `domain/` deve continuare a compilare da sola.
+
+```
+presentation/     HTTP: rotte, DTO, validazione di forma, mappatura errori
+      |
+      v
+application/      orchestrazione: command, handler, caricamento aggregato
+      |
+      v
+   domain/        aggregati, Value Object, eventi, errori, porte
+      ^
+      |
+persistence/      adapter dei repository
+infrastructure/   adapter di Clock e generatori di id
+```
+
+Le **porte** vivono in `domain/ports/` perché è il dominio a possedere il contratto; gli adapter stanno fuori e lo implementano. È questo che rende sostituibile la persistenza senza toccare una riga di logica — `useClass: InMemoryTodoRepository` → `useClass: PostgresTodoRepository` è una riga in `todo.module.ts`, e nessun handler, nessun test e nessuna riga di dominio cambia.
+
+### I moduli
+
+Ognuno documenta le proprie decisioni, con il perché di quelle non ovvie:
+
+- **[`src/todo/`](apps/api-command/src/todo/README.md)** — l'aggregato `Todo`. Ciclo di vita `todo ↔ done` con cancellazione logica ortogonale, scadenza come Value Object, ownership e controllo di accesso. È il README più completo: le convenzioni comuni sono spiegate lì per esteso.
+- **[`src/user/`](apps/api-command/src/user/README.md)** — l'aggregato `User`. Email come Value Object, piani di abbonamento senza gerarchia, e il caso più interessante del progetto: l'unicità dell'email, che non è un invariante dell'aggregato e vive nel vincolo di persistenza.
+
+**I due moduli non si importano tra loro.** Il legame è il solo `ownerId` che il todo conserva: un'identità opaca, non un riferimento a un aggregato. Anche i duplicati apparenti fra i due (`loadTodo` e `loadUser`, `TODO_VALIDATION` e `USER_VALIDATION`) sono deliberati — condividerli creerebbe un contratto fra bounded context.
+
+## Prima di modificare il codice
+
+Due letture, in quest'ordine:
+
+- **[CLAUDE.md](CLAUDE.md)** — i vincoli del repo. Il più importante è che qui convivono **tre versioni di TypeScript** (7.0.2 nativo alla root e nelle app Next, 5.9 nelle app Nest, 6.0.2 per il parser di typescript-eslint) e "allinearle" rompe `nest build` e Jest. Contiene anche le trappole che falliscono in silenzio: `isolatedModules` che azzera i metadata della DI, gli `outDir` dei tsconfig condivisi, le env var non dichiarate in `turbo.json`.
+- **Il README del modulo che stai toccando** — e va aggiornato nello stesso commit in cui cambi una delle decisioni che documenta.
+
+Il lint è di fatto zero-tolerance: `eslint-plugin-only-warn` declassa ogni errore a warning, ma gli script usano `--max-warnings 0`. Nessun warning è ignorabile.
+
+Commenti, messaggi degli errori di dominio, nomi dei test e documentazione sono in **italiano**; il codice (identificatori, tipi, nomi di file) in **inglese**.
+
+## Link utili
+
+- [Turborepo — Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
+- [Turborepo — Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
+- [Turborepo — Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
+- [NestJS — CQRS](https://docs.nestjs.com/recipes/cqrs)

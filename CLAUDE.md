@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Stato attuale
 
-Scaffold `create-turbo` + due app NestJS agganciate al monorepo (`api-command`, `api-query`, split CQRS). **Non esiste ancora codice di dominio o layer DDD**: `apps/web` e `apps/docs` sono le landing page del template, le due API sono lo scaffold `nest new` con il solo `AppController`. Non dare per scontata una struttura DDD esistente — va introdotta.
+Scaffold `create-turbo` + due app NestJS, split CQRS.
+
+- **`apps/api-command`** — il lato write, ed è dove sta tutto il codice vero. Due moduli DDD completi (`src/todo/`, `src/user/`) con aggregati, Value Object, porte, adapter in memoria, command handler CQRS e confine HTTP. Ha una suite ampia (unitari + e2e).
+- **`apps/api-query`** — ancora lo scaffold `nest new` con il solo `AppController`. Non esiste nessun read model.
+- **`apps/web`, `apps/docs`** — le landing page del template `create-turbo`, mai toccate.
+
+Conseguenza pratica: **gli eventi di dominio non escono dal processo**. Sono pubblicati sull'`EventBus` in-process di `@nestjs/cqrs` e nessuno è iscritto, quindi nessuna proiezione si aggiorna. Non dare per scontato che esista un percorso command -> query.
 
 ## Comandi
 
@@ -31,17 +37,51 @@ Nuovo componente condiviso: `pnpm turbo gen react-component` da `packages/ui`.
 
 Toolchain vincolata: **pnpm 11.23.0** (`packageManager`) e **Node >= 24** (`engines`). Non usare npm/yarn: i workspace usano protocollo `workspace:*`.
 
-Test: solo le app Nest hanno Jest (`test`, `test:watch`, `test:cov`, `test:e2e`). `web` e `docs` non hanno test — `pnpm turbo test` semplicemente le salta. Un singolo test: `pnpm --filter api-command exec jest src/app.controller.spec.ts` (o `-t "nome del test"`).
+Test: solo le app Nest hanno Jest (`test`, `test:watch`, `test:cov`, `test:e2e`). `web` e `docs` non hanno test — `pnpm turbo test` semplicemente le salta. Un singolo test: `pnpm --filter api-command exec jest src/todo/domain` (o `-t "nome del test"`).
+
+**`pnpm turbo test` non esegue gli e2e**: il task `test` mappa su `jest`, che usa il `jest.config` di default (solo `src/**`). Gli e2e hanno una config propria e vanno lanciati esplicitamente, e una modifica al confine HTTP che li rompe non fa fallire nessun comando da root:
+
+```sh
+pnpm --filter api-command test:e2e
+```
 
 ## Struttura dei workspace
 
 `pnpm-workspace.yaml` include `apps/*` e `packages/*`.
 
 - `apps/web` (3000) e `apps/docs` (3001): Next.js 16 App Router, React 19, CSS Modules. Configurazione identica.
-- `apps/api-command` (3002) e `apps/api-query` (3003): NestJS 11 + Express, lato write e lato read. Configurazione identica.
+- `apps/api-command` (3002) e `apps/api-query` (3003): NestJS 11 + Express, lato write e lato read. Configurazione (tsconfig, eslint, jest) identica; il contenuto no — vedi _Stato attuale_.
 - `packages/ui` → `@repo/ui`: libreria di componenti React condivisa.
 - `packages/eslint-config` → `@repo/eslint-config`: config ESLint flat condivise (`base`, `next-js`, `react-internal`, `nest`).
 - `packages/typescript-config` → `@repo/typescript-config`: `tsconfig` base condivisi (`base`, `nextjs`, `react-library`, `nestjs`).
+
+## Il dominio in `api-command`
+
+**Prima di toccare `src/todo/` o `src/user/`, leggi [`apps/api-command/src/todo/README.md`](apps/api-command/src/todo/README.md).** È la fonte di verità sulle convenzioni del lato write: la regola di dipendenza tra i layer, il flusso di un comando, come si aggiunge un comando nuovo, e le decisioni non ovvie con il perché. `src/user/` segue le stesse convenzioni senza avere un README proprio. Quando cambi una di quelle decisioni, aggiorna il README nello stesso commit: è scritto per essere letto invece del codice.
+
+Layout di un modulo (le frecce vanno solo verso `domain/`, che non importa da nessun altro layer):
+
+```
+presentation/    rotte, DTO, validazione di forma, mappatura degli errori su HTTP
+application/     command, handler, caricamento dell'aggregato
+domain/          aggregati, Value Object, eventi, errori, porte
+persistence/     adapter del repository
+infrastructure/  adapter di Clock e generatori di id
+```
+
+Cinque convenzioni che, se violate, **rompono in silenzio** — nessun errore di compilazione, nessun test rosso:
+
+- **Le porte sono `abstract class`, mai `interface` + `Symbol`.** Servono token DI risolvibili a runtime (vedi `isolatedModules` più sotto).
+- **`mergeObjectContext` è obbligatorio.** `AggregateRoot.publishAll` di base è un metodo vuoto: un aggregato non mergiato scarta i suoi eventi al `commit()` senza lanciare niente. Per questo il caricamento passa sempre da `loadTodo` / `loadUser`, che fanno il merge insieme alla lettura — e, per il todo, anche il controllo di ownership.
+- **Prima si persiste, poi si pubblica**, in tutti gli handler.
+- **`add` e `update` sono distinti, mai un upsert.** Servono i due segnali che un upsert cancella: id duplicato e aggregato scomparso.
+- **Gli eventi portano solo primitivi serializzabili**, mai Value Object: devono poter attraversare una coda.
+
+**I due moduli non si importano tra loro.** `todo/` non nomina `User` e non ha accesso a `UserRepository`: il legame è il solo `ownerId`, un'identità opaca. Anche i duplicati apparenti (`loadTodo` e `loadUser`, sei righe quasi identiche) sono deliberati — astrarli creerebbe un contratto condiviso tra bounded context.
+
+**L'identità di chi agisce.** I comandi del modulo todo portano un `actorId`, che arriva da `@Actor()` (`src/shared/presentation/actor.decorator.ts`) e mai dal body. Il decoratore legge l'header `x-user-id` ed è un **segnaposto dichiarato**: non c'è autenticazione, chiunque può dichiararsi chiunque. Il modulo `user` non ha ancora l'attore nei suoi comandi — è un'asimmetria nota, non una scelta.
+
+**Lingua.** Commenti, messaggi degli errori di dominio, nomi dei test e README sono in italiano. Il codice (identificatori, tipi, nomi di file) è in inglese. Segui la stessa divisione.
 
 ## Punti architetturali non ovvi
 
