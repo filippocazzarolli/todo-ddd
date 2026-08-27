@@ -1,0 +1,419 @@
+import { AggregateRoot } from '@nestjs/cqrs';
+
+import {
+  TodoAlreadyDoneError,
+  TodoDeletedError,
+  TodoNotDoneError,
+  TodoTitleRequiredError,
+} from '../errors/todo.errors';
+import { TodoCreatedEvent } from '../events/todo-created.event';
+import { TodoDeletedEvent } from '../events/todo-deleted.event';
+import { TodoMarkedAsDoneEvent } from '../events/todo-marked-as-done.event';
+import { TodoReopenedEvent } from '../events/todo-reopened.event';
+import { TodoChanges, TodoUpdatedEvent } from '../events/todo-updated.event';
+import {
+  Expiration,
+  ExpirationProps,
+} from '../value-objects/expiration.value-object';
+
+/**
+ * Ciclo di vita del todo. Union di string literal e non `enum`: i valori sono
+ * già la loro rappresentazione persistita, quindi non serve un livello di
+ * indirezione tra nome e valore.
+ *
+ * `Status` e non `State` perché `TodoProps` sta a un altro livello: lì c'è
+ * *tutto* lo stato dell'aggregato, qui solo il punto in cui si trova nel suo
+ * ciclo di vita.
+ */
+export type TodoStatus = 'todo' | 'done';
+
+/**
+ * Forma completa e normalizzata di un todo: `CreateTodoProps` è il suo
+ * sottoinsieme grezzo, senza i campi che decide l'aggregato.
+ *
+ * Un tipo con due ruoli: stato interno dell'aggregato e contratto verso la
+ * persistenza (`snapshot()` lo produce, `rehydrate()` lo consuma). Restano
+ * un tipo solo perché oggi le due forme coincidono — quando la persistenza
+ * vera vorrà `expiration` come stringa ISO invece del Value Object, è qui che
+ * si dividono in due.
+ */
+export interface TodoProps {
+  todoId: string;
+  title: string;
+  status: TodoStatus;
+  /**
+   * Cancellazione logica. Non è un terzo valore di `TodoStatus` perché è
+   * ortogonale al ciclo di vita: si cancella sia un todo aperto sia uno
+   * completato, e il suo `status` resta un'informazione valida.
+   */
+  deleted: boolean;
+  description?: string;
+  important?: boolean;
+  /**
+   * Scadenza opzionale. È il Value Object e non le sue parti: l'invariante
+   * "data e ora reali, mai nel passato" vive dentro `Expiration`, quindi uno
+   * stato che compila è già uno stato valido. Immutabile, perciò può stare
+   * nello stato e uscire nello `snapshot()` senza copia.
+   */
+  expiration?: Expiration;
+  // category:
+  tags?: string[];
+}
+
+/** Dati grezzi accettati dalla factory: nessun campo derivato o di lifecycle. */
+export interface CreateTodoProps {
+  /**
+   * Identità assegnata dal chiamante tramite `TodoIdGenerator`: il dominio non
+   * genera ID, così `create` resta una funzione pura e testabile senza mock.
+   */
+  todoId: string;
+  title: string;
+  /**
+   * Istante di riferimento, iniettato come il `todoId`: serve a `Expiration`
+   * per rifiutare le scadenze nel passato senza che il dominio legga l'ora di
+   * sistema. Obbligatorio anche senza `expiration` — un todo nasce in un
+   * momento preciso, e renderlo opzionale renderebbe rappresentabile una
+   * creazione senza "adesso" con cui confrontarsi.
+   */
+  now: Date;
+  description?: string;
+  important?: boolean;
+  /** Parti grezze della scadenza: a validarle e comporle è `Expiration`. */
+  expiration?: ExpirationProps;
+  tags?: string[];
+}
+
+/**
+ * Campi modificabili di un todo esistente, tutti opzionali: l'update è
+ * parziale, non una sostituzione.
+ *
+ * Tre stati per ogni campo, e servono tutti e tre:
+ * - chiave assente -> non toccare;
+ * - valore -> assegna;
+ * - `null` -> azzera (solo dove il campo è opzionale nel todo).
+ *
+ * `title` non ammette `null` perché non è azzerabile: un todo senza titolo non
+ * esiste. `important` e `tags` non ne hanno bisogno, hanno un valore neutro
+ * proprio (`false`, `[]`).
+ */
+export interface UpdateTodoProps {
+  /**
+   * Istante di riferimento, come in `CreateTodoProps`: serve a `Expiration`
+   * per rifiutare le scadenze nel passato. Obbligatorio anche quando l'update
+   * non tocca la scadenza — un tipo in cui si può chiedere una scadenza senza
+   * un "adesso" con cui confrontarla è un tipo che permette di sbagliare.
+   */
+  now: Date;
+  title?: string;
+  /** `null` azzera; anche una stringa vuota o di soli spazi, come in `create`. */
+  description?: string | null;
+  important?: boolean;
+  /** `null` rimuove la scadenza; le parti grezze la sostituiscono. */
+  expiration?: ExpirationProps | null;
+  /** Insieme completo che sostituisce quello attuale, non un delta. */
+  tags?: string[];
+}
+
+/**
+ * Aggregate Root del todo.
+ *
+ * Ciclo di vita: `todo` <-> `done`, con `deleted` come stato terminale
+ * ortogonale che congela ogni ulteriore transizione.
+ */
+export class Todo extends AggregateRoot {
+  private constructor(private props: TodoProps) {
+    super();
+  }
+
+  /**
+   * Factory: crea un todo nuovo e registra `TodoCreatedEvent`.
+   *
+   * Da usare solo per todo che nascono ora. Per riportare in memoria un todo
+   * già persistito serve `rehydrate`, che non emette eventi.
+   */
+  static create(props: CreateTodoProps): Todo {
+    const title = normalizeTitle(props.title);
+    const description =
+      props.description === undefined
+        ? undefined
+        : normalizeDescription(props.description);
+    const important = props.important ?? false;
+    const tags = normalizeTags(props.tags);
+    const expiration =
+      props.expiration === undefined
+        ? undefined
+        : Expiration.create(props.expiration, props.now);
+
+    const todo = new Todo({
+      todoId: props.todoId,
+      title,
+      status: 'todo',
+      deleted: false,
+      description,
+      important,
+      expiration,
+      tags,
+    });
+
+    todo.apply(
+      new TodoCreatedEvent(
+        todo.props.todoId,
+        title,
+        important,
+        tags,
+        todo.props.description,
+        expiration?.toISOString(),
+      ),
+    );
+
+    return todo;
+  }
+
+  /**
+   * Ricostruisce l'aggregato da uno stato persistito, senza emettere eventi:
+   * quei fatti sono già accaduti.
+   */
+  static rehydrate(props: TodoProps): Todo {
+    /*
+     * `expiration` è ripetuto pur essendo già nello spread perché una chiave
+     * assente e una a `undefined` non sono la stessa cosa per lo `snapshot()`
+     * che ne deriva: così la forma dello stato non dipende da come è stato
+     * costruito lo stato in ingresso.
+     */
+    return new Todo({
+      ...props,
+      expiration: props.expiration,
+      tags: normalizeTags(props.tags),
+    });
+  }
+
+  /**
+   * Aggiorna i campi modificabili del todo ed emette `TodoUpdatedEvent` con il
+   * solo delta.
+   *
+   * Unico vincolo di stato: il todo non deve essere cancellato. Un todo
+   * completato resta modificabile — correggere il titolo di qualcosa che si è
+   * già fatto è legittimo, e `done` non è uno stato terminale (esiste
+   * `reopen`).
+   *
+   * No-op silenzioso se nessun valore cambia davvero: nessuna mutazione,
+   * nessun evento. A differenza di `markAsDone`, qui non c'è conflitto da
+   * segnalare — riscrivere un titolo identico non è un errore del chiamante,
+   * è solo una richiesta che non ha niente da fare.
+   */
+  update(props: UpdateTodoProps): void {
+    this.ensureNotDeleted();
+
+    /*
+     * Si valida tutto prima di mutare qualsiasi cosa: `normalizeTitle` e
+     * `Expiration.create` possono lanciare, e mutando strada facendo un
+     * titolo valido con una scadenza nel passato lascerebbe in memoria un
+     * aggregato a metà, in uno stato che nessun comando ha chiesto. Il
+     * repository non lo salverebbe, ma l'istanza è già stata corrotta.
+     */
+    const title =
+      props.title === undefined ? undefined : normalizeTitle(props.title);
+    const expiration =
+      props.expiration === undefined || props.expiration === null
+        ? undefined
+        : Expiration.create(props.expiration, props.now);
+
+    /*
+     * Da qui in poi si legge `props.<campo> !== undefined` per sapere se il
+     * campo è stato toccato, e non il valore calcolato: è l'input a portare
+     * quell'informazione senza ambiguità, mentre un valore `undefined` da solo
+     * non distingue "non toccato" da "azzerato".
+     */
+    const changes: TodoChanges = {};
+
+    if (title !== undefined && title !== this.props.title) {
+      this.props.title = title;
+      changes.title = title;
+    }
+
+    if (props.description !== undefined) {
+      const description = normalizeDescription(props.description);
+
+      if (description !== this.props.description) {
+        this.props.description = description;
+        changes.description = description ?? null;
+      }
+    }
+
+    if (
+      props.important !== undefined &&
+      props.important !== this.props.important
+    ) {
+      this.props.important = props.important;
+      changes.important = props.important;
+    }
+
+    if (
+      props.expiration !== undefined &&
+      !sameExpiration(this.props.expiration, expiration)
+    ) {
+      this.props.expiration = expiration;
+      changes.expiration = expiration?.toISOString() ?? null;
+    }
+
+    if (props.tags !== undefined) {
+      const tags = normalizeTags(props.tags);
+
+      if (!sameTags(this.props.tags, tags)) {
+        this.props.tags = tags;
+        changes.tags = tags;
+      }
+    }
+
+    if (Object.keys(changes).length === 0) {
+      return;
+    }
+
+    this.apply(new TodoUpdatedEvent(this.props.todoId, changes));
+  }
+
+  /**
+   * Transizione `todo` -> `done`.
+   *
+   * Non è idempotente: ricompletare un todo è un errore del chiamante, non
+   * un no-op silenzioso.
+   */
+  markAsDone(): void {
+    this.ensureNotDeleted();
+
+    if (this.props.status === 'done') {
+      throw new TodoAlreadyDoneError(this.props.todoId);
+    }
+
+    this.props.status = 'done';
+    this.apply(new TodoMarkedAsDoneEvent(this.props.todoId));
+  }
+
+  /**
+   * Transizione `done` -> `todo`: inverso di `markAsDone`.
+   *
+   * Simmetrica anche nella severità: riaprire un todo che non è completato è
+   * un errore del chiamante. La transizione è invece ripetibile quante volte
+   * serve, il ciclo di vita non è a senso unico.
+   */
+  reopen(): void {
+    this.ensureNotDeleted();
+
+    if (this.props.status === 'todo') {
+      throw new TodoNotDoneError(this.props.todoId);
+    }
+
+    this.props.status = 'todo';
+    this.apply(new TodoReopenedEvent(this.props.todoId));
+  }
+
+  /**
+   * Cancella il todo.
+   *
+   * È una cancellazione *logica* a livello di aggregato: il flag serve
+   * all'aggregato per rifiutare ogni transizione successiva finché resta in
+   * memoria. Se il repository poi esegua una `DELETE` fisica o scriva un
+   * tombstone è una decisione di persistenza, invisibile al dominio.
+   */
+  delete(): void {
+    this.ensureNotDeleted();
+
+    this.props.deleted = true;
+    this.apply(new TodoDeletedEvent(this.props.todoId));
+  }
+
+  get todoId(): string {
+    return this.props.todoId;
+  }
+
+  get status(): TodoStatus {
+    return this.props.status;
+  }
+
+  get isDone(): boolean {
+    return this.props.status === 'done';
+  }
+
+  get isDeleted(): boolean {
+    return this.props.deleted;
+  }
+
+  /** `undefined` se il todo non ha scadenza: è un campo opzionale. */
+  get expiration(): Expiration | undefined {
+    return this.props.expiration;
+  }
+
+  /**
+   * Un aggregato cancellato non accetta più transizioni: la sua esistenza è
+   * precondizione di qualunque altra invariante, quindi va verificata prima.
+   */
+  private ensureNotDeleted(): void {
+    if (this.props.deleted) {
+      throw new TodoDeletedError(this.props.todoId);
+    }
+  }
+
+  /** Snapshot immutabile per il repository: lo stato interno non esce mai. */
+  snapshot(): Readonly<TodoProps> {
+    return { ...this.props, tags: [...normalizeTags(this.props.tags)] };
+  }
+}
+
+/** Titolo normalizzato, o `TodoTitleRequiredError` se non ne resta nulla. */
+function normalizeTitle(title: string): string {
+  const trimmed = title.trim();
+
+  if (trimmed.length === 0) {
+    throw new TodoTitleRequiredError();
+  }
+
+  return trimmed;
+}
+
+/**
+ * Descrizione normalizzata. `null` e una stringa di soli spazi collassano
+ * entrambi su `undefined`: "assente" ha una sola rappresentazione nello stato.
+ */
+function normalizeDescription(description: string | null): string | undefined {
+  if (description === null) {
+    return undefined;
+  }
+
+  const trimmed = description.trim();
+
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/** Scadenze uguali, incluso il caso in cui manchino entrambe. */
+function sameExpiration(
+  current: Expiration | undefined,
+  next: Expiration | undefined,
+): boolean {
+  if (current === undefined || next === undefined) {
+    return current === next;
+  }
+
+  return current.equals(next);
+}
+
+/** Uguaglianza per contenuto: entrambe le liste sono già normalizzate. */
+function sameTags(
+  current: readonly string[] | undefined,
+  next: readonly string[],
+): boolean {
+  const tags = current ?? [];
+
+  return (
+    tags.length === next.length &&
+    tags.every((tag, index) => tag === next[index])
+  );
+}
+
+/** Tag normalizzati: trimmati, senza vuoti, senza duplicati. */
+function normalizeTags(tags?: readonly string[]): string[] {
+  if (tags === undefined) {
+    return [];
+  }
+
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+}

@@ -1,0 +1,162 @@
+import { CommandBus, CqrsModule, EventBus } from '@nestjs/cqrs';
+import { Test, TestingModule } from '@nestjs/testing';
+
+import { Todo } from '../../domain/aggregates/todo.aggregate';
+import { TodoDeletedError } from '../../domain/errors/todo.errors';
+import { TodoDeletedEvent } from '../../domain/events/todo-deleted.event';
+import { TodoRepository } from '../../domain/ports/todo.repository';
+import { InMemoryTodoRepository } from '../../persistence/in-memory-todo.repository';
+import { TodoNotFoundError } from '../errors/todo-not-found.error';
+import { DeleteTodoCommand } from './delete-todo.command';
+import { DeleteTodoHandler } from './delete-todo.handler';
+
+const TODO_ID = 'todo-1';
+
+/** Componenti locali, non stringa ISO: vedi lo spec dell'aggregato. */
+const NOW = new Date(2026, 0, 15, 10, 30);
+
+describe('DeleteTodoHandler', () => {
+  let moduleRef: TestingModule;
+  let handler: DeleteTodoHandler;
+  let commandBus: CommandBus;
+  let eventBus: EventBus;
+  let repository: InMemoryTodoRepository;
+
+  async function seed(mutate?: (todo: Todo) => void): Promise<void> {
+    const todo = Todo.create({
+      todoId: TODO_ID,
+      title: 'Comprare il latte',
+      now: NOW,
+    });
+
+    mutate?.(todo);
+
+    await repository.add(todo);
+  }
+
+  async function loadOrFail(todoId: string): Promise<Todo> {
+    const todo = await repository.findById(todoId);
+
+    if (todo === null) {
+      throw new Error(`Todo ${todoId} atteso nel repository, non trovato`);
+    }
+
+    return todo;
+  }
+
+  beforeEach(async () => {
+    moduleRef = await Test.createTestingModule({
+      imports: [CqrsModule.forRoot()],
+      providers: [
+        DeleteTodoHandler,
+        { provide: TodoRepository, useClass: InMemoryTodoRepository },
+      ],
+    }).compile();
+
+    await moduleRef.init();
+
+    handler = moduleRef.get(DeleteTodoHandler);
+    commandBus = moduleRef.get(CommandBus);
+    eventBus = moduleRef.get(EventBus);
+    repository = moduleRef.get<InMemoryTodoRepository>(TodoRepository);
+  });
+
+  afterEach(async () => {
+    await moduleRef.close();
+  });
+
+  it('marca il todo come cancellato e ne persiste lo stato', async () => {
+    await seed();
+
+    await handler.execute(new DeleteTodoCommand(TODO_ID));
+
+    expect((await loadOrFail(TODO_ID)).isDeleted).toBe(true);
+  });
+
+  it('l`aggregato resta caricabile: la cancellazione è logica', async () => {
+    await seed();
+
+    await handler.execute(new DeleteTodoCommand(TODO_ID));
+
+    // Il repository non filtra i cancellati, altrimenti apparirebbero
+    // inesistenti e questo comando restituirebbe TodoNotFoundError.
+    await expect(repository.findById(TODO_ID)).resolves.not.toBeNull();
+  });
+
+  it('non altera lo status: deleted è ortogonale al ciclo di vita', async () => {
+    await seed((todo) => todo.markAsDone());
+
+    await handler.execute(new DeleteTodoCommand(TODO_ID));
+
+    const todo = await loadOrFail(TODO_ID);
+
+    expect(todo.isDeleted).toBe(true);
+    expect(todo.status).toBe('done');
+  });
+
+  it('pubblica TodoDeletedEvent', async () => {
+    await seed();
+
+    const published: unknown[] = [];
+    jest
+      .spyOn(eventBus, 'publishAll')
+      .mockImplementation((events: unknown[]) => {
+        published.push(...events);
+        return [];
+      });
+
+    await handler.execute(new DeleteTodoCommand(TODO_ID));
+
+    expect(published).toStrictEqual([new TodoDeletedEvent(TODO_ID)]);
+  });
+
+  it('pubblica dopo aver persistito, non prima', async () => {
+    await seed();
+
+    const calls: string[] = [];
+    jest.spyOn(repository, 'update').mockImplementation(() => {
+      calls.push('update');
+      return Promise.resolve();
+    });
+    jest.spyOn(eventBus, 'publishAll').mockImplementation(() => {
+      calls.push('publishAll');
+      return [];
+    });
+
+    await handler.execute(new DeleteTodoCommand(TODO_ID));
+
+    expect(calls).toStrictEqual(['update', 'publishAll']);
+  });
+
+  it('solleva TodoNotFoundError se il todo non esiste, senza pubblicare', async () => {
+    const publishAll = jest.spyOn(eventBus, 'publishAll');
+
+    await expect(
+      handler.execute(new DeleteTodoCommand('inesistente')),
+    ).rejects.toThrow(TodoNotFoundError);
+
+    expect(publishAll).not.toHaveBeenCalled();
+  });
+
+  it('non è idempotente: la seconda cancellazione è un errore', async () => {
+    await seed();
+
+    await handler.execute(new DeleteTodoCommand(TODO_ID));
+
+    const write = jest.spyOn(repository, 'update');
+
+    await expect(
+      handler.execute(new DeleteTodoCommand(TODO_ID)),
+    ).rejects.toThrow(TodoDeletedError);
+
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('è raggiungibile dal CommandBus con le classi astratte come token DI', async () => {
+    await seed();
+
+    await commandBus.execute(new DeleteTodoCommand(TODO_ID));
+
+    expect((await loadOrFail(TODO_ID)).isDeleted).toBe(true);
+  });
+});
