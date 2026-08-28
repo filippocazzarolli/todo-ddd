@@ -10,13 +10,13 @@ Ascolta su `PORT`, default **3003**.
 
 Ciò che c'è è la **configurazione**, pronta perché il lavoro cominci senza toccarla:
 
-| Dipendenza                                 | A cosa serve                                    |
-| ------------------------------------------ | ----------------------------------------------- |
-| `@repo/db`                                 | gli oggetti tabella su cui si scrivono le query |
-| `drizzle-orm`                              | gli operatori (`eq`, `and`, `desc`)             |
-| `better-sqlite3` + `@types/better-sqlite3` | il driver                                       |
+| Dipendenza                                 | A cosa serve                                   |
+| ------------------------------------------ | ---------------------------------------------- |
+| `@repo/db`                                 | le view di lettura su cui si scrivono le query |
+| `drizzle-orm`                              | gli operatori (`eq`, `and`, `desc`)            |
+| `better-sqlite3` + `@types/better-sqlite3` | il driver                                      |
 
-Il primo pezzo di codice del lato read comincia quindi da `import { todos } from '@repo/db/schema'`.
+Il primo pezzo di codice del lato read comincia quindi da `import { todosRead } from '@repo/db/schema'` — la **view**, non la tabella: vedi _Il confine_.
 
 ## Come si legge lo stesso database
 
@@ -30,16 +30,20 @@ Il file SQLite è condiviso con `api-command`, che è l'unico a scriverlo. Cinqu
 
 **L'ordine di avvio conta.** Il reader non può creare né migrare il database: su un clone pulito serve `pnpm db:migrate` (o un avvio di `api-command`) prima. `fileMustExist: true` fa fallire l'avvio in modo esplicito invece di aprire un database vuoto altrove, che è il modo silenzioso di sbagliare.
 
-**Le query si scrivono sulle tabelle di scrittura**, e quindi lo schema del lato write è il contratto del lato read: rinominare una colonna in `api-command` è un breaking change qui. È una scelta pragmatica dichiarata, non una dimenticanza — vedi _Il confine_ qui sotto.
+**Le query si scrivono sulle view `todos_read` e `users_read`, mai sulle tabelle base.** Sono il contratto di lettura, e sono ciò che assorbe un rename di colonna nel lato write: senza, ogni query di qui dipenderebbe dai nomi fisici di un modello su cui questa app non ha voce in capitolo. Restano fuori dal contratto `version` (meccanismo di concorrenza ottimistica del lato write) e `outbox` (macchinario interno). Vedi _Il confine_ qui sotto per ciò che le view **non** risolvono.
 
 ## Il confine
 
-Leggere le tabelle di scrittura **aggira** il problema che il progetto ha, invece di risolverlo: gli eventi di dominio non escono dal processo (`EventBus` in-process, nessun iscritto), quindi non esiste un percorso command → query e non c'è nessuna proiezione da leggere.
+Leggere lo stato del write model **aggira** il problema che il progetto ha, invece di risolverlo: non esiste ancora un percorso command → query, quindi non c'è nessuna proiezione da leggere. Le view sono un confine, non una soluzione — e la distinzione conta, perché un confine ben messo rende facile non accorgersi di quello che manca.
 
-Le due strade per uscirne, in ordine di costo:
+Dov'è arrivato il percorso, e dove si ferma:
 
-1. **Una view Drizzle** (`sqliteView`) in `@repo/db`, che diventa il contratto di lettura e assorbe i cambi di colonna fisica. Costa una view e non tocca il lato write.
-2. **Un read model vero**: tabelle di proiezione alimentate dagli eventi. È il CQRS che il progetto ha progettato, e richiede prima l'outbox e un bus fra i due processi — vedi _Cosa manca_ nel [README del modulo todo](../api-command/src/todo/README.md#cosa-manca).
+1. ✅ **Gli eventi sono durevoli.** `api-command` li scrive nella tabella `outbox` nella stessa transazione dell'aggregato: un evento non si perde più fra la write e la pubblicazione.
+2. ✅ **Il contratto di lettura è dichiarato.** Le view di [`@repo/db`](../../packages/db/README.md) assorbono i cambi di colonna fisica, e una spec verifica che espongano esattamente ciò che promettono.
+3. ❌ **Manca il relay.** Nessuno legge l'`outbox` e pubblica: gli eventi restano lì. Serve prima un package condiviso per i contratti degli eventi — oggi le classi vivono in `api-command` e questo workspace non può importarle — e i metadati che un bus reale richiede (`occurredAt` vero, versione dello schema).
+4. ❌ **Manca il read model vero**: tabelle di proiezione alimentate da quegli eventi. È il CQRS che il progetto ha progettato, e il giorno in cui esisterà le view spariranno insieme a questa dipendenza dal write model.
+
+Vedi _Cosa manca_ nel [README del modulo todo](../api-command/src/todo/README.md#cosa-manca).
 
 ## Comandi
 

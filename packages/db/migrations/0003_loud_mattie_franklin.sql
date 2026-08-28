@@ -1,0 +1,2 @@
+CREATE VIEW `todos_read` AS select "todo_id", "owner_id", "title", "status", "deleted", "description", "important", "expiration", "tags" from "todos";--> statement-breakpoint
+CREATE VIEW `users_read` AS select "user_id", "email", "first_name", "last_name", "subscription", "deleted" from "users";

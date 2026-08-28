@@ -7,11 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Scaffold `create-turbo` + due app NestJS, split CQRS.
 
 - **`apps/api-command`** — il lato write, ed è dove sta tutto il codice vero. Due moduli DDD completi (`src/todo/`, `src/user/`) con aggregati, Value Object, porte, adapter Drizzle, command handler CQRS e confine HTTP. Ha una suite ampia (unitari + e2e).
-- **`packages/db`** — `@repo/db`: schema Drizzle, migrazioni e connessione SQLite, condivisi fra i due servizi. **Il primo package del repo con un build step reale.**
-- **`apps/api-query`** — ancora lo scaffold `nest new` con il solo `AppController`. Non esiste nessun read model: ci sono solo le dipendenze (`@repo/db`, `drizzle-orm`, `better-sqlite3`) predisposte.
+- **`packages/db`** — `@repo/db`: schema Drizzle, migrazioni, connessione SQLite e le **view del contratto di lettura**, condivisi fra i due servizi. **Il primo package del repo con un build step reale**, e di fatto uno _Shared Kernel_: nessun consumatore lo cambia da solo (vedi il suo README).
+- **`apps/api-query`** — ancora lo scaffold `nest new` con il solo `AppController`. Non esiste nessun read model: ci sono le dipendenze predisposte e le view `todos_read` / `users_read` da cui le query dovranno partire, **mai dalle tabelle base**.
 - **`apps/web`, `apps/docs`** — le landing page del template `create-turbo`, mai toccate.
 
-Conseguenza pratica: **gli eventi di dominio non escono dal processo**. Sono pubblicati sull'`EventBus` in-process di `@nestjs/cqrs` e nessuno è iscritto, quindi nessuna proiezione si aggiorna. Non dare per scontato che esista un percorso command -> query.
+Conseguenza pratica: **gli eventi di dominio non escono dal processo**. Sono scritti in modo durevole nella tabella `outbox` — nella stessa transazione dell'aggregato — e pubblicati sull'`EventBus` in-process di `@nestjs/cqrs`, ma **nessun relay legge l'outbox** e nessuno è iscritto al bus. Nessuna proiezione si aggiorna: non dare per scontato che esista un percorso command -> query.
 
 La persistenza invece è reale: SQLite via Drizzle, file in `data/todo.sqlite` (gitignored), migrazioni in `packages/db/migrations/`. Gli adapter in memoria **esistono ancora** ma sono retrocessi a test double degli handler spec: non sono più registrati in nessun modulo.
 
@@ -95,7 +95,7 @@ Otto convenzioni che, se violate, **rompono in silenzio** — nessun errore di c
 
 **L'identità di chi agisce.** I comandi del modulo todo portano un `actorId`, che arriva da `@Actor()` (`src/shared/presentation/actor.decorator.ts`) e mai dal body. Il decoratore legge l'header `x-user-id` ed è un **segnaposto dichiarato**: non c'è autenticazione, chiunque può dichiararsi chiunque. Il modulo `user` non ha ancora l'attore nei suoi comandi — è un'asimmetria nota, non una scelta.
 
-**Lo schema è l'unico punto di contatto fra i due bounded context**, per la chiave esterna `todos.owner_id -> users.user_id`. Nessun import attraversa i due moduli, e la spec dell'adapter todo inserisce l'utente prendendo la tabella `users` da `@repo/db`, non da `src/user/`. La FK richiede `PRAGMA foreign_keys = ON`, che in SQLite è per-connessione e spento per default.
+**Lo schema è l'unico punto di contatto fra i due bounded context**, per la chiave esterna `todos.owner_id -> users.user_id` (e per la tabella `outbox`, che non appartiene a nessuno dei due e distingue la provenienza con una stringa opaca). Nessun import attraversa i due moduli, e la spec dell'adapter todo inserisce l'utente prendendo la tabella `users` da `@repo/db`, non da `src/user/`. La FK richiede `PRAGMA foreign_keys = ON`, che in SQLite è per-connessione e spento per default.
 
 **Lingua.** Commenti, messaggi degli errori di dominio, nomi dei test e README sono in italiano. Il codice (identificatori, tipi, nomi di file) è in inglese. Segui la stessa divisione.
 

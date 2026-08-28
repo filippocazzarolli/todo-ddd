@@ -6,13 +6,13 @@ Monorepo Turborepo con un'applicazione di gestione todo modellata in **Domain-Dr
 
 Il lato write è implementato; il lato read no.
 
-| Workspace          | Porta | Stato                                                                  |
-| ------------------ | ----- | ---------------------------------------------------------------------- |
-| `apps/api-command` | 3002  | Due moduli DDD completi: [`todo`](#i-moduli) e [`user`](#i-moduli)     |
-| `apps/api-query`   | 3003  | Scaffold `nest new`: nessun read model, solo le dipendenze predisposte |
-| `apps/web`         | 3000  | Landing page del template `create-turbo`, mai toccata                  |
-| `apps/docs`        | 3001  | Landing page del template `create-turbo`, mai toccata                  |
-| `packages/db`      | —     | Schema Drizzle e migrazioni, condivisi fra i due servizi               |
+| Workspace          | Porta | Stato                                                                       |
+| ------------------ | ----- | --------------------------------------------------------------------------- |
+| `apps/api-command` | 3002  | Due moduli DDD completi: [`todo`](#i-moduli) e [`user`](#i-moduli)          |
+| `apps/api-query`   | 3003  | Scaffold `nest new`: nessun read model, dipendenze e view di lettura pronte |
+| `apps/web`         | 3000  | Landing page del template `create-turbo`, mai toccata                       |
+| `apps/docs`        | 3001  | Landing page del template `create-turbo`, mai toccata                       |
+| `packages/db`      | —     | Schema Drizzle e migrazioni, condivisi fra i due servizi                    |
 
 Conseguenza da tenere presente: **gli eventi di dominio non escono dal processo**. Sono pubblicati sull'`EventBus` in-process di `@nestjs/cqrs` e nessuno è iscritto, quindi non esiste ancora un percorso command → query e nessuna proiezione si aggiorna.
 

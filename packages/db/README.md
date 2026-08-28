@@ -47,6 +47,40 @@ Le decisioni non ovvie sono documentate nei rispettivi file. In sintesi:
 - **`outbox.recorded_at` non è un `occurred_at`.** Dice quando la riga è stata scritta, con il `CURRENT_TIMESTAMP` del database e non l'orologio del processo. Il momento in cui il fatto è accaduto appartiene all'evento, e arriverà quando gli eventi avranno i loro metadati.
 - **`todos` e `users` hanno una colonna `version`**, per la concorrenza ottimistica del lato write: l'adapter scrive `UPDATE ... SET version = ? WHERE <id> = ? AND version = ?`, e zero righe toccate significa che qualcun altro è arrivato prima. Il `default 1` non serve all'adapter, che la valorizza sempre: serve alle righe che nascono altrove — una migrazione, una fixture, un import — perché non partano da un valore che il dominio non si aspetta.
 
+## Il contratto di lettura, e chi comanda su questo package
+
+Questo package è consumato da tre parti — i due bounded context del lato write e
+il lato read — quindi **è uno Shared Kernel**, con la proprietà che quel nome
+porta con sé: nessuno dei consumatori può cambiarlo da solo. Oggi il costo è
+zero (tre tabelle, un team), ma è una proprietà del pattern e non una
+conseguenza della dimensione, e conviene averla scritta prima che serva.
+
+Le regole che ne derivano:
+
+- **`api-query` legge le view di [`src/schema/read.ts`](./src/schema/read.ts)**,
+  `todos_read` e `users_read`, mai le tabelle base. Sono il confine che assorbe i
+  rename di colonna del lato write: cambiare `todos.title` è una riga qui invece
+  che ogni query dall'altra parte. `src/schema/read.spec.ts` verifica che le view
+  esistano e che espongano **esattamente** le colonne del contratto — è la parte
+  che si romperebbe in silenzio, perché una colonna nuova che spunta in una view
+  non dà nessun errore.
+- **`version` e `outbox` restano fuori dal contratto.** La prima è il meccanismo
+  di concorrenza ottimistica del lato write; la seconda è macchinario interno, e
+  il giorno in cui il reader dovrà consumare gli eventi lo farà da un bus, non da
+  una `SELECT`.
+- **La chiave esterna `todos.owner_id -> users.user_id` è il costo del kernel con
+  l'orizzonte più lungo.** Vincola i due bounded context a vivere nello stesso
+  database: il giorno in cui `user` migrasse altrove, `TodoOwnerNotFoundError`
+  resterebbe senza chi lo faccia valere, e la verifica diventerebbe una policy in
+  coerenza eventuale. Non è un motivo per toglierla oggi — è un motivo per non
+  scoprirlo quel giorno.
+
+Le view **non risolvono** il problema di fondo, e vale la pena dirlo invece di
+lasciarlo intendere: leggere lo stato del write model non è un read model. Quello
+vero sono tabelle di proiezione alimentate dagli eventi, e richiede il relay che
+oggi non legge l'`outbox`. Le view sono il confine più economico che si possa
+mettere nel frattempo, e spariranno insieme a questa dipendenza.
+
 ## La connessione
 
 `createSqliteClient({ url, readOnly })` applica i pragma, e non sono interscambiabili fra i due ruoli:
