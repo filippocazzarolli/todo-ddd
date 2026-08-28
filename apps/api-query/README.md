@@ -1,98 +1,60 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# `api-query` — il lato read
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Servizio NestJS 11 + Express che dovrà esporre il lato **query** dello split CQRS: leggere, filtrare, elencare. Scrivere e decidere è di [`api-command`](../api-command).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Ascolta su `PORT`, default **3003**.
 
-## Description
+## Stato
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+**È ancora lo scaffold `nest new`**: il solo `AppController` con un `GET /` che risponde `Hello World!`. Nessun read model, nessuna rotta di lettura, nessuna connessione al database.
 
-## Project setup
+Ciò che c'è è la **configurazione**, pronta perché il lavoro cominci senza toccarla:
 
-```bash
-$ pnpm install
+| Dipendenza                                 | A cosa serve                                    |
+| ------------------------------------------ | ----------------------------------------------- |
+| `@repo/db`                                 | gli oggetti tabella su cui si scrivono le query |
+| `drizzle-orm`                              | gli operatori (`eq`, `and`, `desc`)             |
+| `better-sqlite3` + `@types/better-sqlite3` | il driver                                       |
+
+Il primo pezzo di codice del lato read comincia quindi da `import { todos } from '@repo/db/schema'`.
+
+## Come si legge lo stesso database
+
+Il file SQLite è condiviso con `api-command`, che è l'unico a scriverlo. Cinque cose da sapere prima di aprire una connessione, perché nessuna si deduce dal codice esistente:
+
+**La connessione va aperta in sola lettura**: `readOnly: true`, `fileMustExist: true`, e `PRAGMA query_only = ON` come seconda rete. `createSqliteClient({ readOnly: true })` di `@repo/db` fa già tutto questo. Il privilegio di scrittura resta del lato write non per convenzione ma per rifiuto del driver.
+
+**Non eseguire `PRAGMA journal_mode`.** Il journal mode è persistente nell'header del file, non una proprietà della connessione: lo imposta il writer una volta sola. Su una connessione readonly il tentativo è un no-op.
+
+**Un reader su un database in WAL ha bisogno di accesso in _scrittura_ al file `-shm`.** Fra due processi dello stesso utente sulla stessa macchina non è un problema. Lo diventa in un container con filesystem read-only, un volume montato `ro`, o un uid diverso: in quel caso il reader non apre affatto il database. E WAL richiede un filesystem locale — mai NFS o SMB.
+
+**L'ordine di avvio conta.** Il reader non può creare né migrare il database: su un clone pulito serve `pnpm db:migrate` (o un avvio di `api-command`) prima. `fileMustExist: true` fa fallire l'avvio in modo esplicito invece di aprire un database vuoto altrove, che è il modo silenzioso di sbagliare.
+
+**Le query si scrivono sulle tabelle di scrittura**, e quindi lo schema del lato write è il contratto del lato read: rinominare una colonna in `api-command` è un breaking change qui. È una scelta pragmatica dichiarata, non una dimenticanza — vedi _Il confine_ qui sotto.
+
+## Il confine
+
+Leggere le tabelle di scrittura **aggira** il problema che il progetto ha, invece di risolverlo: gli eventi di dominio non escono dal processo (`EventBus` in-process, nessun iscritto), quindi non esiste un percorso command → query e non c'è nessuna proiezione da leggere.
+
+Le due strade per uscirne, in ordine di costo:
+
+1. **Una view Drizzle** (`sqliteView`) in `@repo/db`, che diventa il contratto di lettura e assorbe i cambi di colonna fisica. Costa una view e non tocca il lato write.
+2. **Un read model vero**: tabelle di proiezione alimentate dagli eventi. È il CQRS che il progetto ha progettato, e richiede prima l'outbox e un bus fra i due processi — vedi _Cosa manca_ nel [README del modulo todo](../api-command/src/todo/README.md#cosa-manca).
+
+## Comandi
+
+```sh
+pnpm dev            # nest start --watch
+pnpm build          # nest build -> dist/
+pnpm start          # node dist/main
+pnpm lint           # eslint --max-warnings 0
+pnpm check-types    # tsc --noEmit
+pnpm test           # jest — solo src/**
+pnpm test:e2e       # gli e2e NON sono inclusi in `pnpm test`
 ```
 
-## Compile and run the project
+## Altro
 
-```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- [README del progetto](../../README.md) — monorepo, avvio, architettura d'insieme.
+- [`packages/db`](../../packages/db/README.md) — schema, migrazioni, dove sta il file di database.
+- [CLAUDE.md](../../CLAUDE.md) — i vincoli del repo. In particolare: qui convivono tre versioni di TypeScript, e **questa app deve restare su `^5.9`**.

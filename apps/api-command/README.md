@@ -2,7 +2,7 @@
 
 Servizio NestJS 11 + Express che espone il lato **command** dello split CQRS: qui si scrive e si decide. Leggere, filtrare ed elencare è di [`api-query`](../api-query), che è ancora lo scaffold vuoto.
 
-Ascolta su `PORT`, default **3002**. La persistenza è in memoria: ogni riavvio riparte da zero.
+Ascolta su `PORT`, default **3002**. Persiste su SQLite via Drizzle: lo schema e le migrazioni stanno in [`packages/db`](../../packages/db/README.md), il file in `data/todo.sqlite`. Su un clone pulito serve `pnpm db:migrate` prima del primo avvio; `DATABASE_URL` sovrascrive il path.
 
 ## Struttura
 
@@ -13,7 +13,8 @@ src/
   todo/              modulo di dominio
   user/              modulo di dominio
   shared/            meccanismo comune ai due, senza dominio
-test/                e2e su HTTP vero (solo il modulo todo)
+                     (incluso DatabaseModule: la connessione e' una sola)
+test/                e2e su HTTP vero (solo il modulo todo), su un DB :memory:
 ```
 
 ## I moduli

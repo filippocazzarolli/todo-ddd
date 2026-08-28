@@ -6,16 +6,17 @@ Monorepo Turborepo con un'applicazione di gestione todo modellata in **Domain-Dr
 
 Il lato write è implementato; il lato read no.
 
-| Workspace          | Porta | Stato                                                              |
-| ------------------ | ----- | ------------------------------------------------------------------ |
-| `apps/api-command` | 3002  | Due moduli DDD completi: [`todo`](#i-moduli) e [`user`](#i-moduli) |
-| `apps/api-query`   | 3003  | Scaffold `nest new`, nessun read model                             |
-| `apps/web`         | 3000  | Landing page del template `create-turbo`, mai toccata              |
-| `apps/docs`        | 3001  | Landing page del template `create-turbo`, mai toccata              |
+| Workspace          | Porta | Stato                                                                  |
+| ------------------ | ----- | ---------------------------------------------------------------------- |
+| `apps/api-command` | 3002  | Due moduli DDD completi: [`todo`](#i-moduli) e [`user`](#i-moduli)     |
+| `apps/api-query`   | 3003  | Scaffold `nest new`: nessun read model, solo le dipendenze predisposte |
+| `apps/web`         | 3000  | Landing page del template `create-turbo`, mai toccata                  |
+| `apps/docs`        | 3001  | Landing page del template `create-turbo`, mai toccata                  |
+| `packages/db`      | —     | Schema Drizzle e migrazioni, condivisi fra i due servizi               |
 
 Conseguenza da tenere presente: **gli eventi di dominio non escono dal processo**. Sono pubblicati sull'`EventBus` in-process di `@nestjs/cqrs` e nessuno è iscritto, quindi non esiste ancora un percorso command → query e nessuna proiezione si aggiorna.
 
-La persistenza è in memoria: ogni riavvio riparte da zero.
+La persistenza è **SQLite via Drizzle**: il file sta in `data/todo.sqlite` (gitignored) e le migrazioni in [`packages/db`](packages/db/README.md). Il lato write lo scrive, il lato read lo leggerà in sola lettura. Su un clone pulito serve `pnpm db:migrate` prima del primo avvio.
 
 ## Avvio
 
@@ -23,6 +24,7 @@ Servono **Node >= 24** e **pnpm 11.23.0** (`packageManager`). La toolchain gira 
 
 ```sh
 pnpm install
+pnpm db:migrate                       # crea data/todo.sqlite — serve una volta
 pnpm dev                              # tutte le app in watch
 pnpm turbo dev --filter=api-command   # solo il lato write
 ```
@@ -71,9 +73,11 @@ apps/
   api-query/        NestJS 11 — lato read (da fare)
   web/ docs/        Next.js 16 — template create-turbo
 packages/
+  db/                  @repo/db — schema Drizzle, migrazioni, connessione. Ha un build step
   ui/                  @repo/ui — componenti React condivisi, senza build step
-  eslint-config/       @repo/eslint-config — flat config: base, next-js, react-internal, nest
+  eslint-config/       @repo/eslint-config — flat config: base, next-js, react-internal, nest, node
   typescript-config/   @repo/typescript-config — base, nextjs, react-library, nestjs
+data/                  il file SQLite, gitignored: dato mutabile, fuori da ogni package
 ```
 
 ## L'architettura del lato write
@@ -94,7 +98,7 @@ persistence/      adapter dei repository
 infrastructure/   adapter di Clock e generatori di id
 ```
 
-Le **porte** vivono in `domain/ports/` perché è il dominio a possedere il contratto; gli adapter stanno fuori e lo implementano. È questo che rende sostituibile la persistenza senza toccare una riga di logica — `useClass: InMemoryTodoRepository` → `useClass: PostgresTodoRepository` è una riga in `todo.module.ts`, e nessun handler, nessun test e nessuna riga di dominio cambia.
+Le **porte** vivono in `domain/ports/` perché è il dominio a possedere il contratto; gli adapter stanno fuori e lo implementano. È questo che rende sostituibile la persistenza senza toccare una riga di logica, e la prova è che è già successo: il passaggio da `InMemoryTodoRepository` a `DrizzleTodoRepository` è stato una riga in `todo.module.ts`, senza toccare un handler, un test di dominio o una riga di aggregato. Gli adapter in memoria non sono stati cancellati: sono i test double degli handler spec.
 
 ### I moduli
 

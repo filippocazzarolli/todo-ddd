@@ -6,11 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Scaffold `create-turbo` + due app NestJS, split CQRS.
 
-- **`apps/api-command`** — il lato write, ed è dove sta tutto il codice vero. Due moduli DDD completi (`src/todo/`, `src/user/`) con aggregati, Value Object, porte, adapter in memoria, command handler CQRS e confine HTTP. Ha una suite ampia (unitari + e2e).
-- **`apps/api-query`** — ancora lo scaffold `nest new` con il solo `AppController`. Non esiste nessun read model.
+- **`apps/api-command`** — il lato write, ed è dove sta tutto il codice vero. Due moduli DDD completi (`src/todo/`, `src/user/`) con aggregati, Value Object, porte, adapter Drizzle, command handler CQRS e confine HTTP. Ha una suite ampia (unitari + e2e).
+- **`packages/db`** — `@repo/db`: schema Drizzle, migrazioni e connessione SQLite, condivisi fra i due servizi. **Il primo package del repo con un build step reale.**
+- **`apps/api-query`** — ancora lo scaffold `nest new` con il solo `AppController`. Non esiste nessun read model: ci sono solo le dipendenze (`@repo/db`, `drizzle-orm`, `better-sqlite3`) predisposte.
 - **`apps/web`, `apps/docs`** — le landing page del template `create-turbo`, mai toccate.
 
 Conseguenza pratica: **gli eventi di dominio non escono dal processo**. Sono pubblicati sull'`EventBus` in-process di `@nestjs/cqrs` e nessuno è iscritto, quindi nessuna proiezione si aggiorna. Non dare per scontato che esista un percorso command -> query.
+
+La persistenza invece è reale: SQLite via Drizzle, file in `data/todo.sqlite` (gitignored), migrazioni in `packages/db/migrations/`. Gli adapter in memoria **esistono ancora** ma sono retrocessi a test double degli handler spec: non sono più registrati in nessun modulo.
 
 ## Comandi
 
@@ -22,8 +25,12 @@ pnpm build          # build di tutti i workspace
 pnpm lint           # eslint su tutti i workspace
 pnpm check-types    # next typegen + tsc --noEmit
 pnpm format         # prettier --write su **/*.{ts,tsx,md}
-pnpm turbo test     # jest (solo le app Nest lo implementano)
+pnpm turbo test     # jest (le app Nest e @repo/db)
+pnpm db:generate    # drizzle-kit generate, dopo una modifica allo schema
+pnpm db:migrate     # applica le migrazioni pendenti (serve al primo clone)
 ```
+
+**Dopo ogni modifica a `packages/db/src/schema/`, `pnpm db:generate`.** Niente lo impone: `build`, `lint` e `test` passano tutti con schema e migrazioni disallineati, e il disallineamento si scopre a runtime con un errore SQL. L'unico comando che lo verifica è `drizzle-kit check`, che gira dentro il `check-types` di `@repo/db`.
 
 Per lavorare su un singolo workspace usa i filtri Turbo (`--filter` accetta il `name` del package.json):
 
@@ -47,13 +54,15 @@ pnpm --filter api-command test:e2e
 
 ## Struttura dei workspace
 
-`pnpm-workspace.yaml` include `apps/*` e `packages/*`.
+`pnpm-workspace.yaml` include `apps/*` e `packages/*`, e dichiara in `allowBuilds` i pacchetti con script nativi (`better-sqlite3`, `esbuild`).
 
 - `apps/web` (3000) e `apps/docs` (3001): Next.js 16 App Router, React 19, CSS Modules. Configurazione identica.
 - `apps/api-command` (3002) e `apps/api-query` (3003): NestJS 11 + Express, lato write e lato read. Configurazione (tsconfig, eslint, jest) identica; il contenuto no — vedi _Stato attuale_.
+- `packages/db` → `@repo/db`: schema Drizzle, migrazioni, connessione SQLite. **Ha un build step** (`tsc` -> `dist/`), a differenza di `@repo/ui` — vedi _Il package `db`_ più sotto.
 - `packages/ui` → `@repo/ui`: libreria di componenti React condivisa.
-- `packages/eslint-config` → `@repo/eslint-config`: config ESLint flat condivise (`base`, `next-js`, `react-internal`, `nest`).
+- `packages/eslint-config` → `@repo/eslint-config`: config ESLint flat condivise (`base`, `next-js`, `react-internal`, `nest`, `node`).
 - `packages/typescript-config` → `@repo/typescript-config`: `tsconfig` base condivisi (`base`, `nextjs`, `react-library`, `nestjs`).
+- `data/` alla root: il file SQLite, gitignored. Non è un workspace — è dato mutabile, tenuto fuori da ogni package.
 
 ## Il dominio in `api-command`
 
@@ -65,25 +74,47 @@ Layout di un modulo (le frecce vanno solo verso `domain/`, che non importa da ne
 presentation/    rotte, DTO, validazione di forma, mappatura degli errori su HTTP
 application/     command, handler, caricamento dell'aggregato
 domain/          aggregati, Value Object, eventi, errori, porte
-persistence/     adapter del repository
+persistence/     adapter del repository + mapper stato <-> riga
 infrastructure/  adapter di Clock e generatori di id
 ```
 
-Cinque convenzioni che, se violate, **rompono in silenzio** — nessun errore di compilazione, nessun test rosso:
+Il **mapper** sta in `persistence/` e non altrove: importa dal dominio (`TodoProps`, `Expiration`) e da `@repo/db` (la forma della riga), e nessun file di `domain/` lo nomina. Nel dominio farebbe dipendere `domain/` dalla forma della riga; in `@repo/db` farebbe dipendere il package condiviso dal dominio di questa app, e `api-query` se lo porterebbe dietro. È anche la ragione per cui `TodoProps` e `UserProps` **non** si sono dovuti dividere in due tipi, come i loro commenti avevano previsto.
+
+Sette convenzioni che, se violate, **rompono in silenzio** — nessun errore di compilazione, nessun test rosso:
 
 - **Le porte sono `abstract class`, mai `interface` + `Symbol`.** Servono token DI risolvibili a runtime (vedi `isolatedModules` più sotto).
 - **`mergeObjectContext` è obbligatorio.** `AggregateRoot.publishAll` di base è un metodo vuoto: un aggregato non mergiato scarta i suoi eventi al `commit()` senza lanciare niente. Per questo il caricamento passa sempre da `loadTodo` / `loadUser`, che fanno il merge insieme alla lettura — e, per il todo, anche il controllo di ownership.
 - **Prima si persiste, poi si pubblica**, in tutti gli handler.
 - **`add` e `update` sono distinti, mai un upsert.** Servono i due segnali che un upsert cancella: id duplicato e aggregato scomparso.
 - **Gli eventi portano solo primitivi serializzabili**, mai Value Object: devono poter attraversare una coda.
+- **`SqliteConnection` va dichiarata solo nei `providers` di `DatabaseModule`.** Elencarla anche in un modulo feature fa creare a Nest un'istanza per modulo: nei test, dove il database è `:memory:` e quindi privato per connessione, diventano **due database distinti** — gli utenti in uno, i todo nell'altro, e la chiave esterna violata da ogni `POST /todos`. I moduli feature fanno `imports: [DatabaseModule]`.
+- **Gli e2e prendono il database da `test/jest-e2e-setup.ts`**, non da una riga in cima allo spec. Uno spec che dimenticasse di forzare `:memory:` passerebbe scrivendo sul database di sviluppo.
 
 **I due moduli non si importano tra loro.** `todo/` non nomina `User` e non ha accesso a `UserRepository`: il legame è il solo `ownerId`, un'identità opaca. Anche i duplicati apparenti (`loadTodo` e `loadUser`, sei righe quasi identiche) sono deliberati — astrarli creerebbe un contratto condiviso tra bounded context.
 
 **L'identità di chi agisce.** I comandi del modulo todo portano un `actorId`, che arriva da `@Actor()` (`src/shared/presentation/actor.decorator.ts`) e mai dal body. Il decoratore legge l'header `x-user-id` ed è un **segnaposto dichiarato**: non c'è autenticazione, chiunque può dichiararsi chiunque. Il modulo `user` non ha ancora l'attore nei suoi comandi — è un'asimmetria nota, non una scelta.
 
+**Lo schema è l'unico punto di contatto fra i due bounded context**, per la chiave esterna `todos.owner_id -> users.user_id`. Nessun import attraversa i due moduli, e la spec dell'adapter todo inserisce l'utente prendendo la tabella `users` da `@repo/db`, non da `src/user/`. La FK richiede `PRAGMA foreign_keys = ON`, che in SQLite è per-connessione e spento per default.
+
 **Lingua.** Commenti, messaggi degli errori di dominio, nomi dei test e README sono in italiano. Il codice (identificatori, tipi, nomi di file) è in inglese. Segui la stessa divisione.
 
 ## Punti architetturali non ovvi
+
+### Il package `db`
+
+**`@repo/db` ha un build step, e non è opzionale.** `@repo/ui` esporta TSX crudo perché lo transpila Next; qui i consumatori sono `nest build` (che è `tsc`, e non compila sorgenti fuori dal proprio progetto) e poi `node dist/main`. Esportare `.ts` darebbe test verdi in ts-jest e un `MODULE_NOT_FOUND` in produzione. Conseguenze:
+
+- `check-types` e `dev` dipendono da `^build` in `turbo.json`, altrimenti su un clone pulito `tsc --noEmit` non trova i `.d.ts` di `@repo/db`;
+- `nest start --watch` **non** ricompila il package: c'è uno script `dev` con `tsc --watch` che gira in parallelo, e se un cambio allo schema non si riflette, riavvia;
+- il `build` fa `rm -rf dist` prima di `tsc`, che a differenza di `nest build` non pulisce l'output — rinominare un file lascerebbe il vecchio `.js` a risolvere via `exports`.
+
+**Il tipo di ritorno di `createSqliteClient` è dichiarato, non inferito.** Con `declaration: true` un tipo inferito che nomina `BetterSqlite3.Database` fa fallire l'emissione dei `.d.ts` con **TS4058** ("cannot be named"), perché quel tipo vive in un percorso dello store pnpm non raggiungibile con un import stabile. Vale la stessa cautela per qualunque nuova funzione esportata che restituisca oggetti del driver o di Drizzle. `skipLibCheck` non aiuta: sopprime il check dei `.d.ts` di terzi, non l'emissione dei propri.
+
+**`better-sqlite3` è un modulo nativo.** pnpm 11 blocca gli script di build per default: senza la voce in `allowBuilds` di `pnpm-workspace.yaml` il binding non viene installato e l'errore arriva **a runtime** (`Cannot find module ...better_sqlite3.node`), non in build. Controllo: `pnpm ignored-builds`. Per la stessa ragione `moduleFileExtensions` di Jest include `"node"` in entrambe le app.
+
+**`better-sqlite3` è sincrono, e questo detta la forma degli adapter.** `db.transaction()` restituisce un valore e non una promise, quindi negli adapter non c'è niente da attendere: sono metodi **non `async`** con firma `Promise`, e gli esiti passano da `shared/persistence/settle.ts`. Un `async` senza `await` fa fallire `require-await`; un `await` messo lì per zittirlo fa scattare `await-thenable`. Vale anche che `SqliteError` espone `code` come **stringa** (`'SQLITE_CONSTRAINT_FOREIGNKEY'`), non un `errcode` numerico — quello appartiene ad altri binding.
+
+**Nessun decoratore Nest in `@repo/db`.** Estende `base.json`, che non ha `emitDecoratorMetadata`: un `@Injectable()` lì compilerebbe senza metadata e la DI si romperebbe a runtime, senza errori in build. La classe iniettabile che avvolge la connessione vive in `api-command`.
 
 **`@repo/ui` non ha build step.** Esporta i sorgenti TSX direttamente: `"exports": { "./*": "./src/*.tsx" }`. Quindi:
 
@@ -136,7 +167,7 @@ Conseguenza pratica: il codice delle app Nest viene compilato da TS 5.9 ma **ana
 - ESLint via `@repo/eslint-config/nest` (base + `recommendedTypeChecked` + globals node/jest). Il blocco `parserOptions.projectService` / `tsconfigRootDir` deve restare nell'`eslint.config.mjs` dell'app: `import.meta.dirname` va valutato lì.
 - Il formatting è di `pnpm format` alla root, non di ESLint (`eslint-plugin-prettier` è stato rimosso dallo scaffold). Le app Nest conservano un `.prettierrc` locale con `singleQuote`, che Prettier applica solo a quelle cartelle — il resto del repo usa i default.
 - `include` copre `src` e `test`, quindi `check-types` verifica anche i test; `nest build` usa `tsconfig.build.json`, che esclude test e spec.
-- Le variabili d'ambiente lette a runtime vanno dichiarate in `turbo.json` (`env` dei task `dev`/`start`, o `globalEnv`), altrimenti `turbo/no-undeclared-env-vars` fa fallire il lint.
+- Le variabili d'ambiente lette a runtime vanno dichiarate in `turbo.json` (`env` dei task `dev`/`start`/`test`, o `globalEnv`), altrimenti `turbo/no-undeclared-env-vars` fa fallire il lint. `DATABASE_URL` è dichiarata negli `env` per-task e **non** in `globalEnv` di proposito: la regola del linter unisce `global` e tutti i task del turbo.json di root, quindi per-task basta — mentre `globalEnv` metterebbe il _valore_ nell'hash di ogni task, azzerando la condivisione di cache fra CI e locale.
 
 ## Ambiente
 
