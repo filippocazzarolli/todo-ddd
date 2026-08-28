@@ -369,7 +369,7 @@ Command<void>` (o `Command<T>` se deve restituire qualcosa), senza logica e
 
 ## Test
 
-264 test unitari sul modulo (più 17 in `shared/`) e 29 e2e, divisi per quello
+273 test unitari sul modulo (più 17 in `shared/`) e 30 e2e, divisi per quello
 che possono provare:
 
 | Dove                              | Cosa verifica                                                         |
@@ -379,6 +379,19 @@ che possono provare:
 | `persistence/`, `infrastructure/` | il contratto delle porte lato adapter, su un DB `:memory:`            |
 | `presentation/`                   | traduzione body -> command e le opzioni del `ValidationPipe`          |
 | `test/todo.e2e-spec.ts`           | rotte, status code e mappatura errori su HTTP vero                    |
+
+**I due adapter di `TodoRepository` girano sulla stessa suite di contratto**,
+[`persistence/todo.repository.contract.ts`](./persistence/todo.repository.contract.ts):
+24 casi che valgono per qualunque implementazione della porta, eseguiti sia
+dall'adapter Drizzle sia dal test double. Restano nelle rispettive spec solo i
+casi che un adapter non _può_ avere — la chiave esterna e le righe corrotte da
+una parte, l'isolamento fra istanze dall'altra.
+
+L'hook `seedOwner` del fixture è ciò che tiene il contratto ricco invece di
+ridurlo al minimo comune denominatore: per l'adapter Drizzle semina l'utente che
+la chiave esterna pretende, per quello in memoria non fa niente. Senza,
+"accetta proprietari diversi" sarebbe finito fuori dal contratto pur essendo una
+regola della porta.
 
 ```sh
 pnpm --filter api-command test                       # unitari

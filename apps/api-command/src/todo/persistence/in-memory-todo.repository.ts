@@ -15,7 +15,9 @@ import { TodoRepository } from '../domain/ports/todo.repository';
  *
  * Non vede gli utenti, quindi non può sollevare `TodoOwnerNotFoundError` e per
  * lui un todo orfano è rappresentabile. È l'unica divergenza dall'adapter vero,
- * ed è anche perché le due spec restano separate.
+ * e l'unica ragione per cui la suite di contratto
+ * (`todo.repository.contract.ts`) ha un hook `seedOwner` invece di dare per
+ * scontato che il proprietario esista.
  *
  * Conserva lo **stato** (`snapshot()`) e non le istanze di `Todo`: tenere in
  * mappa l'aggregato lo renderebbe condiviso e mutabile, così una modifica non

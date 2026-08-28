@@ -10,6 +10,7 @@ import { TodoCreatedEvent } from '../../domain/events/todo-created.event';
 import { Clock } from '../../domain/ports/clock';
 import { TodoIdGenerator } from '../../domain/ports/todo-id.generator';
 import { TodoRepository } from '../../domain/ports/todo.repository';
+import { TodoOwnerNotFoundError } from '../../domain/ports/todo.repository.errors';
 import { InMemoryTodoRepository } from '../../persistence/in-memory-todo.repository';
 import { CreateTodoCommand } from './create-todo.command';
 import { CreateTodoHandler } from './create-todo.handler';
@@ -153,15 +154,41 @@ describe('CreateTodoHandler', () => {
   });
 
   it('non verifica che l`utente esista: il vincolo sta in persistenza', async () => {
-    // `TodoOwnerNotFoundError` e` dichiarato dalla porta ma nessun adapter lo
-    // solleva: finche` la persistenza e` in memoria, un todo orfano e`
-    // rappresentabile. L'handler non interroga `UserRepository` di proposito,
-    // per non accoppiare i due bounded context sul lato write.
+    /*
+     * L'handler non interroga `UserRepository` di proposito, per non accoppiare
+     * i due bounded context sul lato write. Il test double non vede gli utenti,
+     * quindi per lui un todo orfano resta rappresentabile: è l'adapter Drizzle
+     * a sollevare `TodoOwnerNotFoundError`, e il caso qui sotto verifica che
+     * l'handler lo lasci passare.
+     */
     await expect(
       handler.execute(
         new CreateTodoCommand('utente-inesistente', 'Comprare il latte'),
       ),
     ).resolves.toBe(GENERATED_ID);
+  });
+
+  it('propaga TodoOwnerNotFoundError senza pubblicare niente', async () => {
+    /*
+     * Il ramo che nessuna spec copriva: `InMemoryTodoRepository` non può
+     * sollevare questo errore, quindi l'unica prova che l'handler lo lascia
+     * passare — e soprattutto che non pubblica un evento per una write
+     * fallita — erano gli e2e. Qui il rifiuto arriva da uno spy, che è il modo
+     * di esercitare il contratto della porta senza far mentire il test double.
+     */
+    const write = jest
+      .spyOn(repository, 'add')
+      .mockRejectedValue(new TodoOwnerNotFoundError('utente-inesistente'));
+    const publishAll = jest.spyOn(eventBus, 'publishAll');
+
+    await expect(
+      handler.execute(
+        new CreateTodoCommand('utente-inesistente', 'Comprare il latte'),
+      ),
+    ).rejects.toThrow(TodoOwnerNotFoundError);
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(publishAll).not.toHaveBeenCalled();
   });
 
   it('pubblica TodoCreatedEvent sull`EventBus', async () => {

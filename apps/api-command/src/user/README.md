@@ -367,8 +367,8 @@ Nell'ordine, perché ogni passo si appoggia al precedente:
 
 ## Test
 
-225 test unitari sul modulo, **nessun e2e**: è la differenza pratica più
-importante con il modulo todo, che ne ha 27. Le rotte, gli status code reali e
+251 test unitari sul modulo, **nessun e2e**: è la differenza pratica più
+importante con il modulo todo, che ne ha 30. Le rotte, gli status code reali e
 il comportamento del `ValidationPipe` su HTTP vero non sono coperti da niente.
 
 | Dove                              | Cosa verifica                                                         |
@@ -377,6 +377,14 @@ il comportamento del `ValidationPipe` su HTTP vero non sono coperti da niente.
 | `application/**/*.spec.ts`        | orchestrazione: cosa viene persistito, cosa pubblicato, in che ordine |
 | `persistence/`, `infrastructure/` | il contratto delle porte lato adapter, unicità dell'email inclusa     |
 | `presentation/`                   | traduzione body -> command e le opzioni del `ValidationPipe`          |
+
+**I due adapter di `UserRepository` girano sulla stessa suite di contratto**,
+[`persistence/user.repository.contract.ts`](./persistence/user.repository.contract.ts):
+22 casi eseguiti da entrambi. Fra questi c'è ora anche l'ordine fra i due
+vincoli di unicità violati insieme — la regola che `DrizzleUserRepository.add`
+difende con `ON CONFLICT DO NOTHING`, e che prima era asserita su un adapter
+solo. L'unico caso rimasto specifico è la riga corrotta, che il test double non
+può produrre.
 
 ```sh
 pnpm --filter api-command exec jest src/user            # tutto il modulo

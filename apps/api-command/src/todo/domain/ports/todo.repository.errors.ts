@@ -55,8 +55,9 @@ export class TodoNoLongerExistsError extends TodoPersistenceError {
  * `DrizzleTodoRepository` lo solleva, traducendo
  * `SQLITE_CONSTRAINT_FOREIGNKEY`. `InMemoryTodoRepository` no e non può: non
  * vede gli utenti, quindi per il test double un todo orfano resta
- * rappresentabile — ed è la ragione per cui le due spec di questo repository
- * non condividono una suite di contratto.
+ * rappresentabile — ed è l'unico caso che resta fuori dalla suite di contratto
+ * condivisa dalle due spec (`persistence/todo.repository.contract.ts`), che
+ * per il resto le tiene allineate.
  *
  * L'alternativa — l'handler che interroga `UserRepository` prima di creare —
  * è stata scartata: accoppierebbe i due bounded context sul lato write per una
