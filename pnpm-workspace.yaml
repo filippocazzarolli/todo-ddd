@@ -2,4 +2,9 @@ packages:
   - "apps/*"
   - "packages/*"
 allowBuilds:
+  # Modulo nativo: senza questo il binding non viene compilato/scaricato e il primo
+  # `require('better-sqlite3')` fallisce a runtime, non in build.
+  better-sqlite3: true
+  # Dipendenza di drizzle-kit, che la usa per leggere drizzle.config.ts e lo schema.
+  esbuild: true
   unrs-resolver: false

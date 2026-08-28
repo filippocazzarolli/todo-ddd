@@ -1,0 +1,11 @@
+{
+  "extends": "@repo/typescript-config/base.json",
+  "compilerOptions": {
+    "lib": ["es2023"],
+    "target": "ES2023",
+    "types": ["node", "jest"],
+    "noEmit": true
+  },
+  "include": ["src", "drizzle.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

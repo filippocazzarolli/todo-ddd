@@ -36,3 +36,6 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+
+# Local database (dato mutabile: mai versionato, mai dentro un package)
+data/

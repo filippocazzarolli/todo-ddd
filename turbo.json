@@ -3,30 +3,70 @@
   "ui": "tui",
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**", "dist/**"]
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*"
+      ],
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "!.next/dev/**",
+        "dist/**"
+      ]
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "dependsOn": [
+        "^lint"
+      ]
     },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": [
+        "^build",
+        "^check-types"
+      ]
     },
     "dev": {
       "cache": false,
       "persistent": true,
-      "env": ["PORT"]
+      "env": [
+        "PORT",
+        "DATABASE_URL"
+      ],
+      "dependsOn": [
+        "^build"
+      ]
     },
     "test": {
-      "dependsOn": ["^build"],
-      "outputs": []
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [],
+      "env": [
+        "DATABASE_URL"
+      ]
     },
     "start": {
       "cache": false,
       "persistent": true,
-      "dependsOn": ["build"],
-      "env": ["PORT"]
+      "dependsOn": [
+        "build"
+      ],
+      "env": [
+        "PORT",
+        "DATABASE_URL"
+      ]
+    },
+    "db:generate": {
+      "cache": false
+    },
+    "db:migrate": {
+      "cache": false,
+      "dependsOn": [
+        "build"
+      ]
     }
   }
 }
