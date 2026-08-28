@@ -186,19 +186,35 @@ L'unico posto che vede tutti gli utenti è lo store, quindi è lui l'autorità:
 `existsByEmail`**: quel controllo non è una lettura del lato write, è un
 vincolo, e sta in `add`.
 
-`InMemoryUserRepository` riproduce il vincolo con una seconda `Map`
-(`email normalizzata -> userId`) che sta al posto dell'indice. La chiave è
-l'email che esce dal Value Object, non la stringa grezza: se lo fosse,
-`Mario@x.it` e `mario@x.it` sarebbero due chiavi diverse e il vincolo non
-varrebbe niente.
+Oggi l'indice è vero: `CREATE UNIQUE INDEX users_email_unique ON users(email)`,
+in `packages/db`. Il valore scritto in colonna è quello che esce dal Value
+Object, non la stringa grezza: se lo fosse, `Mario@x.it` e `mario@x.it` sarebbero
+due righe diverse e il vincolo non varrebbe niente. `InMemoryUserRepository`
+riproduce lo stesso vincolo con una seconda `Map` (`email normalizzata ->
+userId`), per la stessa ragione e con la stessa chiave.
 
-**Un utente cancellato continua a occupare la sua email.** La sua riga esiste
-ancora e il vincolo vale: è la conseguenza diretta della cancellazione logica,
-non una dimenticanza. Liberare l'indirizzo al `delete` è la scelta opposta — un
-indice parziale `WHERE deleted = false` — e permette la re-registrazione al
-prezzo di rendere ambigua la storia di quel contatto. Va decisa quando si
-scrive lo schema vero, e l'adapter in memoria riproduce di proposito la
-variante conservativa.
+**Un utente cancellato continua a occupare la sua email**, ed è la decisione
+presa quando si è scritto lo schema — non un effetto collaterale. La riga esiste
+ancora e il vincolo vale: è la conseguenza diretta della cancellazione logica.
+L'alternativa era un indice parziale `WHERE deleted = false`, che permette la
+re-registrazione al prezzo di rendere ambigua la storia di quell'indirizzo: chi
+legge una riga cancellata non saprebbe più se quell'email è ancora sua o è già
+di qualcun altro. Scartata a favore della variante conservativa, che è anche
+quella che l'adapter in memoria riproduceva.
+
+### L'ordine fra i due vincoli
+
+Un `add` può violare **entrambi** i vincoli insieme — stesso id e stessa email —
+e i due adapter devono riportare lo stesso errore, altrimenti non implementano
+la stessa porta. SQLite però riporta un vincolo solo, e quale dipende
+dall'ordine di dichiarazione delle colonne: con `user_id` prima di `email`,
+riporta l'email. `InMemoryUserRepository` controlla l'id per primo.
+
+Da qui la forma di `DrizzleUserRepository.add`: `INSERT ... ON CONFLICT DO
+NOTHING`, che non solleva niente e lascia `changes = 0` per entrambi i casi, poi
+due `SELECT` **dentro la stessa transazione** nell'ordine id -> email. Non è il
+controllo preventivo scartato sopra: lì `SELECT` e `INSERT` hanno una finestra in
+mezzo, qui l'insert è già avvenuto e SQLite tiene il write lock.
 
 ## Comandi ed eventi
 
@@ -248,10 +264,16 @@ varia è il **dato**, su tre valori senza ordinamento. Tre rotte (`/free`,
 
 ## Porte e adapter
 
-| Porta             | Adapter                  | Perché è una porta                           |
-| ----------------- | ------------------------ | -------------------------------------------- |
-| `UserRepository`  | `InMemoryUserRepository` | la persistenza è sostituibile                |
-| `UserIdGenerator` | `UuidUserIdGenerator`    | `create` resta una funzione pura e testabile |
+| Porta             | Adapter                 | Perché è una porta                           |
+| ----------------- | ----------------------- | -------------------------------------------- |
+| `UserRepository`  | `DrizzleUserRepository` | la persistenza è sostituibile                |
+| `UserIdGenerator` | `UuidUserIdGenerator`   | `create` resta una funzione pura e testabile |
+
+`InMemoryUserRepository` esiste ancora ma non è più l'adapter dell'app: è il
+**test double** degli handler spec, dove un database sarebbe I/O senza guadagno.
+Che la sostituzione sia costata una riga in `user.module.ts` — senza toccare un
+handler, una riga di dominio o un test di dominio — è la prova che la porta
+serviva a qualcosa.
 
 Superficie minima come in `TodoRepository`: `findById`, `add`, `update`.
 Nessuna ricerca, nessun elenco, nessun `findByEmail` — appartengono al read
@@ -386,10 +408,11 @@ In ordine di importanza, non di difficoltà:
 5. **Nessun outbox.** L'ordine persisti-poi-pubblica è best-effort: se il
    processo muore in mezzo, l'evento è perso e il read model diverge in modo
    permanente e silenzioso.
-6. **La persistenza è un segnaposto.** Manca il DB, e con lui il vincolo
-   `UNIQUE` vero, la concorrenza ottimistica e il confine transazionale che
-   tenga insieme scrittura e outbox. Con lo schema andrà decisa anche la sorte
-   dell'email di un utente cancellato.
+6. **Nessuna concorrenza ottimistica.** Il DB c'è (SQLite via Drizzle, schema in
+   `packages/db`), e con lui il vincolo `UNIQUE` vero. Restano l'assenza di una
+   colonna `version` — due comandi concorrenti sullo stesso utente si
+   sovrascrivono a vicenda — e il confine transazionale che tenga insieme
+   scrittura e outbox.
 7. **Dettagli**: nessuna regola su chi possa cambiare piano (il processo di
    fatturazione non esiste); nessun correlation id per seguire comando ->
    evento -> proiezione.

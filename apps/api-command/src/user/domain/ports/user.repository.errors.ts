@@ -43,11 +43,11 @@ export class UserAlreadyExistsError extends UserPersistenceError {
  * (`UpdateUserProps` non la contiene). Quando arriverà `changeEmail`, `update`
  * erediterà lo stesso fallimento.
  *
- * Nota per l'adapter: con la cancellazione logica un utente cancellato occupa
- * ancora la sua email, perché la riga c'è e il vincolo vale. Liberarla al
- * `delete` è una scelta diversa (indice parziale `WHERE deleted = false`) con
- * conseguenze reali — permette la re-registrazione, ma rende ambigua la storia
- * di quell'indirizzo. Va decisa quando si scrive lo schema, non per caso.
+ * Con la cancellazione logica un utente cancellato occupa ancora la sua email,
+ * perché la riga c'è e il vincolo vale. È la decisione presa scrivendo lo schema
+ * (`UNIQUE (email)` pieno, in `packages/db`) e non un effetto collaterale:
+ * l'alternativa era un indice parziale `WHERE deleted = false`, che permette la
+ * re-registrazione ma rende ambigua la storia di quell'indirizzo.
  */
 export class UserEmailAlreadyTakenError extends UserPersistenceError {
   constructor(public readonly email: string) {

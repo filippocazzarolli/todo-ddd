@@ -43,9 +43,9 @@ export type UserSubscription = (typeof USER_SUBSCRIPTIONS)[number];
  *
  * Come `TodoProps`, ha due ruoli — stato interno dell'aggregato e contratto
  * verso la persistenza (`snapshot()` lo produce, `rehydrate()` lo consuma) — e
- * restano un tipo solo perché oggi le due forme coincidono. Si divideranno
- * quando la persistenza vera vorrà `email` come stringa invece del Value
- * Object.
+ * restano un tipo solo: la persistenza vuole `email` come stringa, ma la
+ * conversione vive in `persistence/user.mapper.ts` invece che in un secondo
+ * tipo.
  *
  * Nessun campo opzionale: un utente senza email, senza nome o senza piano non
  * è un utente incompleto, è un utente che non esiste.

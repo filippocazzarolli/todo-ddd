@@ -9,7 +9,10 @@ import {
 } from '../domain/ports/user.repository.errors';
 
 /**
- * Implementazione in memoria di `UserRepository`, in attesa del DB.
+ * Implementazione in memoria di `UserRepository`: il **test double** degli
+ * handler spec, non l'adapter dell'applicazione — quello è
+ * `DrizzleUserRepository`. Resta perché negli handler spec un database vero
+ * sarebbe I/O senza guadagno: là si verifica l'orchestrazione, non lo storage.
  *
  * Conserva lo **stato** (`snapshot()`) e non le istanze di `User`: tenere in
  * mappa l'aggregato lo renderebbe condiviso e mutabile, così una modifica non
@@ -25,18 +28,15 @@ import {
  *
  * Un utente cancellato **continua a occupare la sua email**: la sua riga
  * esiste ancora, e il vincolo vale. È la conseguenza diretta della
- * cancellazione logica, non una dimenticanza — liberare l'indirizzo al
- * `delete` è la scelta opposta (un indice parziale su `WHERE deleted = false`)
- * e permette la re-registrazione a prezzo di una storia ambigua di quel
- * contatto. Va decisa con lo schema vero, e questo adapter riproduce la
- * variante conservativa.
+ * cancellazione logica, ed è anche la decisione presa nello schema vero
+ * (`UNIQUE (email)` pieno): i due adapter concordano.
  *
- * I metodi restituiscono `Promise` pur essendo sincroni, per non cambiare la
- * firma quando arriverà la persistenza vera. Per questo gli errori escono da
- * `Promise.reject` e non da `throw`: in un metodo non `async` un `throw`
- * sarebbe sincrono, e il chiamante che fa `await` non lo vedrebbe come una
- * promise rifiutata. `async` non è un'opzione — senza `await` nel corpo,
- * `require-await` fa fallire il lint.
+ * I metodi restituiscono `Promise` pur essendo sincroni, perché la firma è
+ * quella della porta. Per questo gli errori escono da `Promise.reject` e non da
+ * `throw`, e `async` non è un'opzione: senza `await` nel corpo, `require-await`
+ * fa fallire il lint. `DrizzleUserRepository` ha la stessa forma per la stessa
+ * ragione — `better-sqlite3` è un driver sincrono, quindi nemmeno lì c'è
+ * qualcosa da attendere.
  */
 @Injectable()
 export class InMemoryUserRepository extends UserRepository {
