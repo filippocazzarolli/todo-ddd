@@ -6,6 +6,24 @@ import {
 import { createSqliteClient, runMigrations, SqliteClient } from '@repo/db';
 
 /**
+ * Il client dentro una transazione, come lo passa Drizzle al callback di
+ * `db.transaction()`.
+ *
+ * **Derivato invece che importato**, e non è vezzo: il tipo vero è un
+ * `SQLiteTransaction<...>` con cinque parametri generici che vive in un percorso
+ * dello store pnpm, e nominarlo qui ripeterebbe la trappola TS4058 già
+ * documentata in `@repo/db`. Ricavarlo dalla firma del metodo lo tiene
+ * automaticamente allineato al client, che è l'unico posto in cui la scelta del
+ * driver è dichiarata.
+ *
+ * Sta qui e non in `@repo/db` per la stessa ragione al contrario: là
+ * `declaration: true` dovrebbe emetterlo in un `.d.ts`, qui no.
+ */
+export type SqliteTransaction = Parameters<
+  Parameters<SqliteClient['db']['transaction']>[0]
+>[0];
+
+/**
  * La connessione SQLite dell'applicazione, e l'unica.
  *
  * **Non è una porta**, ed è per questo che è una classe concreta invece di una
@@ -39,6 +57,27 @@ export class SqliteConnection implements OnModuleInit, OnApplicationShutdown {
   /** Il query builder di Drizzle: è ciò che usano gli adapter dei repository. */
   get db(): SqliteClient['db'] {
     return this.client.db;
+  }
+
+  /**
+   * Esegue `work` dentro una transazione, restituendo il suo valore.
+   *
+   * **Sincrona, e non per pigrizia.** `db.transaction()` su `better-sqlite3`
+   * restituisce un valore e non una promise, perché il driver è sincrono. È
+   * anche l'unico motivo per cui questo metodo può esistere in questa forma: una
+   * transazione SQLite **non può attraversare un `await`**, quindi un
+   * `transaction(async () => ...)` si aprirebbe e chiuderebbe attorno a niente,
+   * lasciando le scritture fuori. Da qui la scelta di tenere la transazione
+   * dentro il metodo dell'adapter invece di lasciarla aprire agli handler: lì
+   * sarebbe stata `async` per forza, e avrebbe funzionato solo finché il driver
+   * resta questo.
+   *
+   * Un `throw` dentro `work` fa il rollback e propaga: è così che gli adapter
+   * annullano una scrittura già eseguita — l'insert del todo con un proprietario
+   * inesistente, per dirne una.
+   */
+  transaction<T>(work: (tx: SqliteTransaction) => T): T {
+    return this.client.db.transaction(work);
   }
 
   onModuleInit(): void {

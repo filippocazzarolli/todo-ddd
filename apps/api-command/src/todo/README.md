@@ -252,6 +252,31 @@ NULL e `'[]'` per "nessun tag". Per `description` invece la corrispondenza
 `undefined` <-> NULL è biunivoca, perché nel dominio "assente" ha una sola
 rappresentazione.
 
+**Gli eventi sono scritti nella stessa transazione dell'aggregato.** Ogni `add`
+e ogni `update` che va a buon fine lascia in `outbox` una riga per evento, e il
+`commit()` dell'handler diventa la strada non durevole: se il processo muore
+subito dopo la scrittura, l'evento è ancora lì. Prima non lo era — fra la write
+e il `publishAll` c'era una finestra, e un evento perso lì dentro faceva
+divergere il read model per sempre, senza un errore da nessuna parte.
+
+La transazione sta **dentro il metodo dell'adapter** e non attorno all'handler,
+e la ragione è tecnica prima che estetica: una transazione SQLite non può
+attraversare un `await`, e l'handler è `async`. Un `unitOfWork.run(async ...)`
+avrebbe letto meglio e avrebbe funzionato per caso, finché il driver resta
+sincrono, rompendosi in silenzio con qualunque altro. Il prezzo è che l'adapter
+conosce l'esistenza degli eventi; è accettabile perché il repository _è_ già il
+confine di persistenza dell'aggregato, e "la radice e ciò che ha prodotto" è la
+stessa unità di lavoro. Nessuna porta cambia, nessun handler cambia.
+
+Due dettagli che non si deducono. La riga di outbox si scrive **solo dove la
+scrittura è avvenuta davvero** — dentro il ramo `changes > 0` di `update`, e
+dopo l'insert di `add`: un `append` messo fuori pubblicherebbe fatti mai
+accaduti, e nel caso di `add` con `ON CONFLICT DO NOTHING` non ci sarebbe
+neanche un rollback ad annullarlo. E l'ordine di consegna è la colonna
+`sequence`, **non** l'`event_id`: l'UUIDv7 sembra già ordinato, ma `uuidV7` non
+garantisce la monotonicità dentro lo stesso millisecondo — che è precisamente il
+caso di due eventi prodotti dallo stesso comando.
+
 **La scrittura è ottimistica, e l'aggregato non se ne accorge.** Ogni riga porta
 una `version`; `update` scrive `WHERE todo_id = ? AND version = ?` e la fa
 avanzare di uno. Zero righe toccate non è più un segnale univoco — l'aggregato
@@ -354,7 +379,9 @@ interpreta data e ora nel fuso del processo — così la suite è indipendente d
 
 **4. Prima si persiste, poi si pubblica.** In quest'ordine, in tutti gli
 handler: il read model non deve vedere una write che potrebbe essere fallita.
-Non è ancora atomico — serve un outbox, vedi _Cosa manca_.
+Il `commit()` che pubblica sull'`EventBus` in-process è però la strada **non
+durevole**: quella vera è la riga di outbox che l'adapter scrive nella stessa
+transazione dell'aggregato — vedi _La persistenza_.
 
 **5. `add` e `update`, non un `save` unico.** Un upsert cancella due segnali che
 servono: l'inserimento di un id duplicato (che è la base dell'idempotenza sulle
@@ -408,7 +435,7 @@ Command<void>` (o `Command<T>` se deve restituire qualcosa), senza logica e
 
 ## Test
 
-289 test unitari sul modulo (più 17 in `shared/`) e 31 e2e, divisi per quello
+296 test unitari sul modulo (più 17 in `shared/`) e 33 e2e, divisi per quello
 che possono provare:
 
 | Dove                              | Cosa verifica                                                         |
@@ -442,14 +469,17 @@ pnpm --filter api-command exec jest src/todo/domain  # solo il dominio
 
 In ordine di importanza, non di difficoltà:
 
-1. **Gli eventi non escono dal processo.** Sono pubblicati sull'`EventBus`
-   in-process e nessuno è iscritto: `api-query` non riceve niente. Serve prima
-   un package condiviso per i contratti degli eventi (oggi le classi vivono
-   qui, e l'altro workspace non può importarle) e i metadati che un bus reale
-   richiede: `eventId`, `occurredAt`, versione dello schema.
-2. **Nessun outbox.** L'ordine persisti-poi-pubblica è best-effort: se il
-   processo muore in mezzo, l'evento è perso e il read model diverge in modo
-   permanente e silenzioso.
+1. **Gli eventi non escono dal processo.** Sono scritti nell'outbox e pubblicati
+   sull'`EventBus` in-process, ma **nessun relay legge la tabella**: `api-query`
+   non riceve niente. È la metà che si può ancora aggiungere in qualsiasi
+   momento — a differenza della scrittura, che se non avviene non si recupera
+   più. Serve prima un package condiviso per i contratti degli eventi (oggi le
+   classi vivono qui, e l'altro workspace non può importarle) e i metadati che
+   un bus reale richiede: `occurredAt` vero, versione dello schema.
+2. **`recorded_at` non è `occurred_at`.** La colonna dice quando la riga è stata
+   scritta, che è l'unica cosa che si sappia davvero: il momento in cui il fatto
+   è accaduto appartiene all'evento e dovrà arrivare dalla porta `Clock`, come
+   ogni altro istante di questo modulo.
 3. **Nessun confine transazionale oltre il singolo metodo.** `add` e `update`
    sono ognuno una transazione a sé, e gli adapter parlano con la connessione
    attraverso un `db` fisso: non c'è modo di far partecipare una scrittura a una

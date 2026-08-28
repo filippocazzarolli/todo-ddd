@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { todos } from '@repo/db';
 import { and, eq } from 'drizzle-orm';
 
+import { OutboxWriter } from '../../shared/persistence/outbox.writer';
 import { settle } from '../../shared/persistence/settle';
 import { SqliteConnection } from '../../shared/persistence/sqlite.connection';
 import { Todo } from '../domain/aggregates/todo.aggregate';
@@ -27,6 +28,13 @@ const SQLITE_CONSTRAINT_UNIQUE = 'SQLITE_CONSTRAINT_UNIQUE';
 const SQLITE_CONSTRAINT_FOREIGNKEY = 'SQLITE_CONSTRAINT_FOREIGNKEY';
 
 /**
+ * La provenienza scritta nelle righe di outbox. Una costante locale e non un
+ * enum condiviso: `OutboxWriter` la prende come stringa opaca proprio per non
+ * diventare un punto in cui i due bounded context si nominano a vicenda.
+ */
+const AGGREGATE_TYPE = 'todo';
+
+/**
  * Adapter SQLite di `TodoRepository`, via Drizzle.
  *
  * Come `DrizzleUserRepository`, i metodi non sono `async`: `better-sqlite3` è un
@@ -42,7 +50,10 @@ const SQLITE_CONSTRAINT_FOREIGNKEY = 'SQLITE_CONSTRAINT_FOREIGNKEY';
  */
 @Injectable()
 export class DrizzleTodoRepository extends TodoRepository {
-  constructor(private readonly connection: SqliteConnection) {
+  constructor(
+    private readonly connection: SqliteConnection,
+    private readonly outbox: OutboxWriter,
+  ) {
     super();
   }
 
@@ -70,13 +81,22 @@ export class DrizzleTodoRepository extends TodoRepository {
    */
   add(todo: Todo): Promise<void> {
     const row = toRow(todo.snapshot());
+    // Letti prima del `commit()` dell'handler, che li azzera: qui ci sono
+    // ancora, ed è l'unico momento in cui si può scriverli con la riga.
+    const events = todo.getUncommittedEvents();
 
     return settle(() => {
-      try {
-        this.connection.db.insert(todos).values(row).run();
-      } catch (error) {
-        throw translate(error, row.todoId, row.ownerId);
-      }
+      this.connection.transaction((tx) => {
+        try {
+          tx.insert(todos).values(row).run();
+        } catch (error) {
+          // Il throw fa il rollback: un todo orfano non lascia neanche la
+          // riga di outbox del suo `TodoCreatedEvent`.
+          throw translate(error, row.todoId, row.ownerId);
+        }
+
+        this.outbox.append(tx, AGGREGATE_TYPE, row.todoId, events);
+      });
     });
   }
 
@@ -103,9 +123,10 @@ export class DrizzleTodoRepository extends TodoRepository {
   update(todo: Todo): Promise<void> {
     const state = todo.snapshot();
     const row = toRow(state);
+    const events = todo.getUncommittedEvents();
 
     return settle(() => {
-      const failure = this.connection.db.transaction((tx) => {
+      const failure = this.connection.transaction((tx) => {
         const { changes } = tx
           .update(todos)
           // `toRow` scrive la versione corrente, che qui è quella *attesa*: il
@@ -118,6 +139,8 @@ export class DrizzleTodoRepository extends TodoRepository {
           .run();
 
         if (changes > 0) {
+          this.outbox.append(tx, AGGREGATE_TYPE, row.todoId, events);
+
           return null;
         }
 

@@ -15,6 +15,13 @@
       "when": 1787912152654,
       "tag": "0001_rich_lockjaw",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787913809977,
+      "tag": "0002_puzzling_stephen_strange",
+      "breakpoints": true
     }
   ]
 }

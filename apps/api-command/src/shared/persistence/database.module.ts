@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 
+import { OutboxWriter } from './outbox.writer';
 import { SqliteConnection } from './sqlite.connection';
 
 /**
- * Fornisce la connessione ai moduli che hanno adapter di persistenza.
+ * Fornisce la connessione e l'`OutboxWriter` ai moduli che hanno adapter di
+ * persistenza.
  *
  * Non è `@Global()` di proposito: il repo tratta la globalità di `CqrsModule`
  * come un'eccezione motivata, non come default, e un `imports: [DatabaseModule]`
@@ -15,7 +17,7 @@ import { SqliteConnection } from './sqlite.connection';
  * documentata in `src/todo/README.md`.
  */
 @Module({
-  providers: [SqliteConnection],
-  exports: [SqliteConnection],
+  providers: [SqliteConnection, OutboxWriter],
+  exports: [SqliteConnection, OutboxWriter],
 })
 export class DatabaseModule {}

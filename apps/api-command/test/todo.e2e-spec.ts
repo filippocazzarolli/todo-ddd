@@ -1,5 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { outbox } from '@repo/db';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import { App } from 'supertest/types';
 
@@ -446,6 +448,55 @@ describe('Todo (e2e)', () => {
 
   it('risponde 404 su una rotta che non esiste', async () => {
     await request(server).get('/todos').set(ACTOR_HEADER, OWNER_ID).expect(404);
+  });
+
+  /**
+   * L'outbox visto dal confine HTTP: un comando andato a buon fine lascia il suo
+   * evento in una tabella durevole, non solo su un bus in-process che nessuno
+   * ascolta. È la differenza fra un evento che si può ancora consegnare e uno
+   * perso per sempre se il processo muore.
+   */
+  describe('l’outbox', () => {
+    /**
+     * Filtra per `aggregate_type`, perché la tabella **è una sola per i due
+     * bounded context**: quando questo blocco gira, il `beforeEach` ha già
+     * lasciato i due `UserCreatedEvent` dei suoi utenti. Non è un effetto
+     * collaterale del test, è la forma dell'outbox — un solo registro ordinato,
+     * che è ciò che permetterà a un relay di consegnare nell'ordine giusto
+     * eventi di aggregati diversi.
+     */
+    function outboxTodoRows() {
+      return app
+        .get(SqliteConnection)
+        .db.select()
+        .from(outbox)
+        .where(eq(outbox.aggregateType, 'todo'))
+        .orderBy(outbox.sequence)
+        .all();
+    }
+
+    it('registra l’evento del comando, non ancora pubblicato', async () => {
+      const todoId = await createTodo();
+
+      expect(outboxTodoRows()).toMatchObject([
+        {
+          aggregateId: todoId,
+          name: 'TodoCreatedEvent',
+          // Nessun relay lo consuma ancora: resta lì, ed è il punto.
+          publishedAt: null,
+        },
+      ]);
+    });
+
+    it('non registra niente per un comando rifiutato', async () => {
+      await request(server)
+        .post('/todos')
+        .set(ACTOR_HEADER, OWNER_ID)
+        .send({ title: '   ' })
+        .expect(400);
+
+      expect(outboxTodoRows()).toStrictEqual([]);
+    });
   });
 
   /**

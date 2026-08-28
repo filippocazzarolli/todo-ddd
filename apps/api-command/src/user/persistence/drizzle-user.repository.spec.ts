@@ -1,15 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { outbox } from '@repo/db';
 
 import { DatabaseModule } from '../../shared/persistence/database.module';
 import { SqliteConnection } from '../../shared/persistence/sqlite.connection';
 import { User } from '../domain/aggregates/user.aggregate';
 import { UserEmailInvalidError } from '../domain/errors/user.errors';
 import { UserRepository } from '../domain/ports/user.repository';
+import { UserEmailAlreadyTakenError } from '../domain/ports/user.repository.errors';
 import { DrizzleUserRepository } from './drizzle-user.repository';
 import { UserRowInvalidError } from './user.mapper';
 import {
   createUserProps,
   describeUserRepositoryContract,
+  OTHER_USER_ID,
   USER_ID,
 } from './user.repository.contract';
 
@@ -50,6 +53,46 @@ describe('DrizzleUserRepository', () => {
   });
 
   describeUserRepositoryContract(() => repository);
+
+  /*
+   * Fuori dal contratto perché l'adapter in memoria non ha un outbox e non può
+   * averlo. La forma è la stessa dell'adapter todo, che ne copre i casi in
+   * dettaglio: qui bastano i due che dipendono da `add` con `ON CONFLICT DO
+   * NOTHING`, la cui interazione con il rollback non è ovvia.
+   */
+  describe('l’outbox transazionale', () => {
+    function outboxRows() {
+      return connection.db.select().from(outbox).orderBy(outbox.sequence).all();
+    }
+
+    it('scrive l’evento dell’aggregato insieme alla riga', async () => {
+      await repository.add(User.create(createUserProps()));
+
+      expect(outboxRows()).toMatchObject([
+        {
+          aggregateType: 'user',
+          aggregateId: USER_ID,
+          name: 'UserCreatedEvent',
+        },
+      ]);
+    });
+
+    it('non scrive l’evento quando l’insert non inserisce niente', async () => {
+      /*
+       * Il caso in cui il rollback non c'entra: `ON CONFLICT DO NOTHING` non
+       * solleva, quindi la transazione arriva in fondo e commit — è il `changes
+       * > 0` a decidere se l'evento va scritto. Un `append` messo fuori da quel
+       * ramo avrebbe pubblicato una creazione mai avvenuta.
+       */
+      await repository.add(User.create(createUserProps()));
+
+      await expect(
+        repository.add(User.create(createUserProps({ userId: OTHER_USER_ID }))),
+      ).rejects.toThrow(UserEmailAlreadyTakenError);
+
+      expect(outboxRows()).toHaveLength(1);
+    });
+  });
 
   describe('una riga che il dominio non sa rappresentare', () => {
     it('non passa per un valore valido', async () => {

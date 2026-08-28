@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { users } from '@repo/db';
 import { and, eq } from 'drizzle-orm';
 
+import { OutboxWriter } from '../../shared/persistence/outbox.writer';
 import { settle } from '../../shared/persistence/settle';
 import { SqliteConnection } from '../../shared/persistence/sqlite.connection';
 import { User } from '../domain/aggregates/user.aggregate';
@@ -14,6 +15,13 @@ import {
   UserPersistenceError,
 } from '../domain/ports/user.repository.errors';
 import { toProps, toRow } from './user.mapper';
+
+/**
+ * La provenienza scritta nelle righe di outbox. Una costante locale e non un
+ * enum condiviso: `OutboxWriter` la prende come stringa opaca proprio per non
+ * diventare un punto in cui i due bounded context si nominano a vicenda.
+ */
+const AGGREGATE_TYPE = 'user';
 
 /**
  * Adapter SQLite di `UserRepository`, via Drizzle.
@@ -38,7 +46,10 @@ import { toProps, toRow } from './user.mapper';
  */
 @Injectable()
 export class DrizzleUserRepository extends UserRepository {
-  constructor(private readonly connection: SqliteConnection) {
+  constructor(
+    private readonly connection: SqliteConnection,
+    private readonly outbox: OutboxWriter,
+  ) {
     super();
   }
 
@@ -77,9 +88,12 @@ export class DrizzleUserRepository extends UserRepository {
    */
   add(user: User): Promise<void> {
     const row = toRow(user.snapshot());
+    // Letti prima del `commit()` dell'handler, che li azzera: qui ci sono
+    // ancora, ed è l'unico momento in cui si può scriverli con la riga.
+    const events = user.getUncommittedEvents();
 
     return settle(() => {
-      const conflict = this.connection.db.transaction((tx) => {
+      const conflict = this.connection.transaction((tx) => {
         const inserted = tx
           .insert(users)
           .values(row)
@@ -87,6 +101,8 @@ export class DrizzleUserRepository extends UserRepository {
           .run();
 
         if (inserted.changes > 0) {
+          this.outbox.append(tx, AGGREGATE_TYPE, row.userId, events);
+
           return null;
         }
 
@@ -147,9 +163,10 @@ export class DrizzleUserRepository extends UserRepository {
   update(user: User): Promise<void> {
     const state = user.snapshot();
     const row = toRow(state);
+    const events = user.getUncommittedEvents();
 
     return settle(() => {
-      const failure = this.connection.db.transaction((tx) => {
+      const failure = this.connection.transaction((tx) => {
         const { changes } = tx
           .update(users)
           .set({ ...row, version: state.version + 1 })
@@ -159,6 +176,8 @@ export class DrizzleUserRepository extends UserRepository {
           .run();
 
         if (changes > 0) {
+          this.outbox.append(tx, AGGREGATE_TYPE, row.userId, events);
+
           return null;
         }
 
