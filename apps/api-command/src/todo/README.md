@@ -122,11 +122,12 @@ Verificarla richiede di guardare fuori dal confine transazionale, esattamente
 come l'unicità dell'email che `User` si rifiuta di controllare. `Todo.create`
 accetta qualunque `ownerId`; il fallimento è dichiarato dalla porta di
 persistenza (`TodoOwnerNotFoundError` su `add`) perché l'unico posto in cui la
-verifica è atomica è un vincolo di chiave esterna. Nessun adapter lo solleva
-oggi: `InMemoryTodoRepository` non vede gli utenti, quindi un todo orfano è
-rappresentabile. L'alternativa — l'handler che interroga `UserRepository` — è
-stata scartata: accoppierebbe i due contesti sul lato write per una verifica
-che resta comunque non atomica.
+verifica è atomica è un vincolo di chiave esterna. Lo solleva
+`DrizzleTodoRepository`, traducendo `SQLITE_CONSTRAINT_FOREIGNKEY`;
+`InMemoryTodoRepository` non può, perché non vede gli utenti, e per il test
+double un todo orfano resta rappresentabile. L'alternativa — l'handler che
+interroga `UserRepository` — è stata scartata: accoppierebbe i due contesti sul
+lato write per una verifica che resta comunque non atomica.
 
 **Il verso dell'associazione è uno solo.** `User` non tiene la lista dei suoi
 todo: sarebbe una collection illimitata dentro un aggregato e un secondo punto
@@ -251,6 +252,22 @@ NULL e `'[]'` per "nessun tag". Per `description` invece la corrispondenza
 `undefined` <-> NULL è biunivoca, perché nel dominio "assente" ha una sola
 rappresentazione.
 
+**Il mapper decide cosa significhi un rifiuto del dominio, e il dominio non lo
+sa.** `Expiration.rehydrate` e `Email.create` sollevano errori di _dominio_:
+chiamati sull'input dell'utente vogliono dire "richiesta sbagliata" e finiscono
+in un 400, ma chiamati su una riga già in tabella vorrebbero dire "il database
+contiene qualcosa che non avremmo mai potuto scriverci", che non è colpa del
+chiamante. Il mapper li traduce quindi in `TodoRowInvalidError`, che nessun
+filtro cattura e che esce come **500**.
+
+Per l'email c'è in più il confronto con il valore normalizzato: `Email.create`
+fa `trim` e `toLowerCase`, quindi una riga con `Mario@X.it` tornerebbe
+normalizzata e verrebbe **riscritta** al primo `update` — una mutazione che
+nessun comando ha chiesto, capace di collidere con `UNIQUE (email)` altrove.
+L'adapter scrive sempre il valore normalizzato, quindi una riga che non lo è non
+l'ha prodotta lui. Per `Expiration` non vale: là la normalizzazione è
+l'azzeramento dei secondi, dichiarata come tolleranza voluta.
+
 **L'adapter non è `async`, ed è deliberato.** `better-sqlite3` è un driver
 sincrono: non c'è niente da attendere, quindi un `async` senza `await` farebbe
 fallire il lint (`require-await`) e un `await` messo lì per zittirlo farebbe
@@ -369,7 +386,7 @@ Command<void>` (o `Command<T>` se deve restituire qualcosa), senza logica e
 
 ## Test
 
-273 test unitari sul modulo (più 17 in `shared/`) e 30 e2e, divisi per quello
+275 test unitari sul modulo (più 17 in `shared/`) e 31 e2e, divisi per quello
 che possono provare:
 
 | Dove                              | Cosa verifica                                                         |
@@ -430,7 +447,4 @@ In ordine di importanza, non di difficoltà:
    verificata, ma l'identità su cui si basa non è provata.
 6. **Dettagli**: `category` è ancora solo un commento in `TodoProps`; non c'è
    idempotenza sul bus (i comandi non sono idempotenti per scelta); non c'è
-   correlation id per seguire comando -> evento -> proiezione; e una riga
-   corrotta in tabella esce come 400 e non 500 quando è un Value Object a
-   rifiutarla (`Expiration.rehydrate`, `Email.create`), perché il mapper
-   riusa i costruttori del dominio invece di averne uno più permissivo.
+   correlation id per seguire comando -> evento -> proiezione.

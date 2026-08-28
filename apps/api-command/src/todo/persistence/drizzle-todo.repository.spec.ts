@@ -4,6 +4,7 @@ import { users } from '@repo/db';
 import { DatabaseModule } from '../../shared/persistence/database.module';
 import { SqliteConnection } from '../../shared/persistence/sqlite.connection';
 import { Todo } from '../domain/aggregates/todo.aggregate';
+import { TodoExpirationInvalidError } from '../domain/errors/todo.errors';
 import { TodoRepository } from '../domain/ports/todo.repository';
 import { TodoOwnerNotFoundError } from '../domain/ports/todo.repository.errors';
 import { DrizzleTodoRepository } from './drizzle-todo.repository';
@@ -133,6 +134,35 @@ describe('DrizzleTodoRepository', () => {
       await expect(repository.findById(TODO_ID)).rejects.toThrow(
         TodoRowInvalidError,
       );
+    });
+
+    it('non accetta una scadenza che non è una data', async () => {
+      /*
+       * Il caso in cui a rifiutare è un Value Object e non il mapper.
+       * `Expiration.rehydrate` solleva un `TodoExpirationInvalidError`, che è un
+       * errore di *dominio*: lasciandolo passare, il filtro darebbe 400 e la
+       * colpa a chi ha solo chiesto di leggere. Il mapper lo traduce, quindi
+       * resta un 500.
+       */
+      await repository.add(Todo.create(createTodoProps()));
+      connection.db.run(
+        "update todos set expiration = 'non una data' where todo_id = 'todo-1'",
+      );
+
+      await expect(repository.findById(TODO_ID)).rejects.toThrow(
+        TodoRowInvalidError,
+      );
+    });
+
+    it('conserva l’errore di dominio come `cause`, per chi legge i log', async () => {
+      await repository.add(Todo.create(createTodoProps()));
+      connection.db.run(
+        "update todos set expiration = 'non una data' where todo_id = 'todo-1'",
+      );
+
+      await expect(repository.findById(TODO_ID)).rejects.toMatchObject({
+        cause: expect.any(TodoExpirationInvalidError) as unknown,
+      });
     });
   });
 });

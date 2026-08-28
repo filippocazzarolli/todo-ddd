@@ -367,8 +367,8 @@ Nell'ordine, perché ogni passo si appoggia al precedente:
 
 ## Test
 
-251 test unitari sul modulo, **nessun e2e**: è la differenza pratica più
-importante con il modulo todo, che ne ha 30. Le rotte, gli status code reali e
+254 test unitari sul modulo, **nessun e2e**: è la differenza pratica più
+importante con il modulo todo, che ne ha 31. Le rotte, gli status code reali e
 il comportamento del `ValidationPipe` su HTTP vero non sono coperti da niente.
 
 | Dove                              | Cosa verifica                                                         |

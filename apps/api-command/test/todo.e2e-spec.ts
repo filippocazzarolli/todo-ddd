@@ -469,5 +469,25 @@ describe('Todo (e2e)', () => {
         .set(ACTOR_HEADER, OWNER_ID)
         .expect(500);
     });
+
+    it('risponde 500 anche quando a rifiutare è un Value Object', async () => {
+      /*
+       * Il caso che prima usciva 400. `Expiration.rehydrate` solleva un
+       * `TodoExpirationInvalidError`, che discende da `TodoDomainError` e che il
+       * filtro quindi cattura: senza la traduzione nel mapper, una colonna
+       * corrotta diventava "richiesta sbagliata" invece di "guasto del server".
+       */
+      const todoId = await createTodo();
+      app
+        .get(SqliteConnection)
+        .db.run(
+          `update todos set expiration = 'non una data' where todo_id = '${todoId}'`,
+        );
+
+      await request(server)
+        .post(`/todos/${todoId}/done`)
+        .set(ACTOR_HEADER, OWNER_ID)
+        .expect(500);
+    });
   });
 });

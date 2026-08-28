@@ -21,15 +21,23 @@ import { Expiration } from '../domain/value-objects/expiration.value-object';
  * test di round-trip con un diff su chiavi mancanti, non su valori.
  */
 
-/** Riga corrotta: un valore in tabella che il dominio non può rappresentare. */
+/**
+ * Riga corrotta: un valore in tabella che il dominio non può rappresentare.
+ *
+ * `cause` porta l'errore di dominio che ha fatto scattare il rifiuto, dove ce
+ * n'è uno. Serve a chi legge i log: questa gerarchia esce come 500, e un 500
+ * senza il motivo per cui il Value Object ha detto di no è un'ora persa.
+ */
 export class TodoRowInvalidError extends Error {
   constructor(
     public readonly todoId: string,
     public readonly column: string,
     public readonly value: unknown,
+    options?: ErrorOptions,
   ) {
     super(
       `La riga del todo ${todoId} ha un valore non valido in ${column}: ${String(value)}`,
+      options,
     );
   }
 }
@@ -61,12 +69,43 @@ export function toProps(row: TodoRow): TodoProps {
     deleted: row.deleted,
     description: row.description ?? undefined,
     important: row.important,
-    expiration:
-      row.expiration === null
-        ? undefined
-        : Expiration.rehydrate(row.expiration),
+    expiration: toExpiration(row.todoId, row.expiration),
     tags: toTags(row.todoId, row.tags),
   };
+}
+
+/**
+ * Ricostruisce la scadenza dalla riga, **senza** lasciare che il dominio decida
+ * l'esito.
+ *
+ * `Expiration.rehydrate` e non `create`, perché "non nel passato" è una regola
+ * sull'assegnazione e non un invariante permanente — un todo scaduto deve poter
+ * tornare in memoria. Ma anche `rehydrate` rifiuta ciò che non è una data, e lo
+ * fa con un `TodoExpirationInvalidError`, che **è** un `TodoDomainError`:
+ * lasciandolo passare, il filtro lo tradurrebbe in un 400 e darebbe la colpa a
+ * un chiamante che ha solo chiesto di leggere. Una colonna che il dominio non sa
+ * rappresentare è un guasto del server, non una richiesta sbagliata.
+ *
+ * Nessun confronto con il valore riscritto, a differenza dell'email: qui la
+ * normalizzazione è l'azzeramento dei secondi, che il docblock di `rehydrate`
+ * dichiara come tolleranza voluta verso una migrazione o un mapper diverso. Là
+ * invece cambia il case dell'identità, e riscriverlo in silenzio ha conseguenze.
+ */
+function toExpiration(
+  todoId: string,
+  value: string | null,
+): Expiration | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  try {
+    return Expiration.rehydrate(value);
+  } catch (error) {
+    throw new TodoRowInvalidError(todoId, 'expiration', value, {
+      cause: error,
+    });
+  }
 }
 
 /**

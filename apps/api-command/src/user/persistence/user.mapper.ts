@@ -22,15 +22,23 @@ import { Email } from '../domain/value-objects/email.value-object';
  * funzioni.
  */
 
-/** Riga corrotta: un valore in tabella che il dominio non può rappresentare. */
+/**
+ * Riga corrotta: un valore in tabella che il dominio non può rappresentare.
+ *
+ * `cause` porta l'errore di dominio che ha fatto scattare il rifiuto, dove ce
+ * n'è uno. Serve a chi legge i log: questa gerarchia esce come 500, e un 500
+ * senza il motivo per cui il Value Object ha detto di no è un'ora persa.
+ */
 export class UserRowInvalidError extends Error {
   constructor(
     public readonly userId: string,
     public readonly column: string,
     public readonly value: unknown,
+    options?: ErrorOptions,
   ) {
     super(
       `La riga dell'utente ${userId} ha un valore non valido in ${column}: ${String(value)}`,
+      options,
     );
   }
 }
@@ -52,25 +60,53 @@ export function toRow(state: Readonly<UserProps>): NewUserRow {
 export function toProps(row: UserRow): UserProps {
   return {
     userId: row.userId,
-    /*
-     * `Email.create` e non una `Email.rehydrate`, che non esiste: il suo Value
-     * Object argomenta contro l'esistenza di quella coppia, e l'argomento tiene
-     * anche qui. `create` applica un invariante *permanente* ed è idempotente su
-     * ciò che ha prodotto lei stessa — `trim` e `toLowerCase` su un valore già
-     * normalizzato sono no-op — mentre `Expiration.rehydrate` esiste perché là
-     * la regola è sull'assegnazione e il tempo la rende falsa.
-     *
-     * Conseguenza accettata: una riga con un'email corrotta esce come
-     * `UserEmailInvalidError`, cioè un 400, dove un 500 sarebbe più onesto. Vale
-     * lo stesso per `Expiration.rehydrate`, ed è il prezzo di non avere un
-     * secondo costruttore più permissivo di quello vero.
-     */
-    email: Email.create(row.email),
+    email: toEmail(row.userId, row.email),
     firstName: row.firstName,
     lastName: row.lastName,
     subscription: toSubscription(row.userId, row.subscription),
     deleted: row.deleted,
   };
+}
+
+/**
+ * Ricostruisce l'email dalla riga, **senza** lasciare che il dominio decida
+ * l'esito.
+ *
+ * `Email.create` e non una `Email.rehydrate`, che non esiste: il suo Value
+ * Object argomenta contro l'esistenza di quella coppia, e l'argomento tiene
+ * anche qui. `create` applica un invariante *permanente*, mentre
+ * `Expiration.rehydrate` esiste perché là la regola è sull'assegnazione e il
+ * tempo la rende falsa.
+ *
+ * Quello che il costruttore di dominio non può decidere è **cosa significhi il
+ * suo rifiuto**. Chiamato su input dell'utente significa "richiesta sbagliata";
+ * chiamato su una riga già in tabella significa "il database contiene qualcosa
+ * che non avremmo mai potuto scriverci", che non è colpa del chiamante. Da qui
+ * la traduzione in `UserRowInvalidError`, che nessun filtro cattura e che quindi
+ * esce come 500.
+ *
+ * **Il confronto con il valore normalizzato non è pignoleria.** `create`
+ * normalizza (trim e minuscolo), quindi una riga con `Mario@X.it` verrebbe
+ * caricata come `mario@x.it` e **riscritta normalizzata** al primo `update`:
+ * una mutazione che nessun comando ha chiesto, e che può collidere con
+ * `UNIQUE (email)` in un punto che sembra non c'entrare niente. L'adapter
+ * scrive sempre il valore già normalizzato, quindi una riga che non lo è non
+ * l'ha prodotta lui: è corrotta, e va detto invece di aggiustarla in silenzio.
+ */
+function toEmail(userId: string, value: string): Email {
+  let email: Email;
+
+  try {
+    email = Email.create(value);
+  } catch (error) {
+    throw new UserRowInvalidError(userId, 'email', value, { cause: error });
+  }
+
+  if (email.toString() !== value) {
+    throw new UserRowInvalidError(userId, 'email', value);
+  }
+
+  return email;
 }
 
 /**
