@@ -18,6 +18,18 @@ import {
 } from '../value-objects/expiration.value-object';
 
 /**
+ * Gli stati esistenti, come tupla `as const` da cui si deriva il tipo — come
+ * `USER_SUBSCRIPTIONS`, e per la stessa ragione: il tipo non sopravvive alla
+ * compilazione, e serve la lista *a runtime* per riconoscere uno `status` che
+ * arriva da fuori. L'unico caso oggi è il mapper della persistenza, che deve
+ * distinguere un valore ammesso da una riga corrotta senza fidarsi di un cast.
+ *
+ * L'ordine non è un dato del dominio: non esiste uno stato "maggiore" di un
+ * altro, e le due transizioni hanno metodi propri (`markAsDone`, `reopen`).
+ */
+export const TODO_STATUSES = ['todo', 'done'] as const;
+
+/**
  * Ciclo di vita del todo. Union di string literal e non `enum`: i valori sono
  * già la loro rappresentazione persistita, quindi non serve un livello di
  * indirezione tra nome e valore.
@@ -26,17 +38,20 @@ import {
  * *tutto* lo stato dell'aggregato, qui solo il punto in cui si trova nel suo
  * ciclo di vita.
  */
-export type TodoStatus = 'todo' | 'done';
+export type TodoStatus = (typeof TODO_STATUSES)[number];
 
 /**
  * Forma completa e normalizzata di un todo: `CreateTodoProps` è il suo
  * sottoinsieme grezzo, senza i campi che decide l'aggregato.
  *
  * Un tipo con due ruoli: stato interno dell'aggregato e contratto verso la
- * persistenza (`snapshot()` lo produce, `rehydrate()` lo consuma). Restano
- * un tipo solo perché oggi le due forme coincidono — quando la persistenza
- * vera vorrà `expiration` come stringa ISO invece del Value Object, è qui che
- * si dividono in due.
+ * persistenza (`snapshot()` lo produce, `rehydrate()` lo consuma).
+ *
+ * Restano un tipo solo anche ora che la persistenza è vera e vuole `expiration`
+ * come stringa ISO: quel commento prevedeva una divisione in due tipi, e la
+ * soluzione scelta è stata un'altra — la conversione sta in
+ * `persistence/todo.mapper.ts`, che è un posto solo invece di un secondo tipo da
+ * tenere allineato a questo.
  */
 export interface TodoProps {
   todoId: string;
