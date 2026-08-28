@@ -8,7 +8,14 @@ import {
 import { TodoRepository } from '../domain/ports/todo.repository';
 
 /**
- * Implementazione in memoria di `TodoRepository`, in attesa del DB.
+ * Implementazione in memoria di `TodoRepository`: il **test double** degli
+ * handler spec, non l'adapter dell'applicazione — quello è
+ * `DrizzleTodoRepository`. Resta perché negli handler spec un database vero
+ * sarebbe I/O senza guadagno: là si verifica l'orchestrazione, non lo storage.
+ *
+ * Non vede gli utenti, quindi non può sollevare `TodoOwnerNotFoundError` e per
+ * lui un todo orfano è rappresentabile. È l'unica divergenza dall'adapter vero,
+ * ed è anche perché le due spec restano separate.
  *
  * Conserva lo **stato** (`snapshot()`) e non le istanze di `Todo`: tenere in
  * mappa l'aggregato lo renderebbe condiviso e mutabile, così una modifica non
@@ -21,12 +28,12 @@ import { TodoRepository } from '../domain/ports/todo.repository';
  * righe toccate: sono i due controlli che rendono `add` e `update` distinti, e
  * un adapter che li omettesse tornerebbe a essere un upsert.
  *
- * I metodi restituiscono `Promise` pur essendo sincroni, per non cambiare la
- * firma quando arriverà la persistenza vera. Per questo gli errori escono da
- * `Promise.reject` e non da `throw`: in un metodo non `async` un `throw`
- * sarebbe sincrono, e il chiamante che fa `await` non lo vedrebbe come una
- * promise rifiutata. `async` non è un'opzione — senza `await` nel corpo,
- * `require-await` fa fallire il lint.
+ * I metodi restituiscono `Promise` pur essendo sincroni, perché la firma è
+ * quella della porta. Per questo gli errori escono da `Promise.reject` e non da
+ * `throw`, e `async` non è un'opzione: senza `await` nel corpo, `require-await`
+ * fa fallire il lint. `DrizzleTodoRepository` ha la stessa forma per la stessa
+ * ragione — `better-sqlite3` è un driver sincrono, quindi nemmeno lì c'è
+ * qualcosa da attendere (là la conversione passa da `settle`).
  */
 @Injectable()
 export class InMemoryTodoRepository extends TodoRepository {

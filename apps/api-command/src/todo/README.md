@@ -200,16 +200,62 @@ niente non emette nessun evento.
 
 ## Porte e adapter
 
-| Porta             | Adapter                  | Perché è una porta                           |
-| ----------------- | ------------------------ | -------------------------------------------- |
-| `TodoRepository`  | `InMemoryTodoRepository` | la persistenza è sostituibile                |
-| `TodoIdGenerator` | `UuidTodoIdGenerator`    | `create` resta una funzione pura e testabile |
-| `Clock`           | `SystemClock`            | il dominio non legge mai l'ora di sistema    |
+| Porta             | Adapter                 | Perché è una porta                           |
+| ----------------- | ----------------------- | -------------------------------------------- |
+| `TodoRepository`  | `DrizzleTodoRepository` | la persistenza è sostituibile                |
+| `TodoIdGenerator` | `UuidTodoIdGenerator`   | `create` resta una funzione pura e testabile |
+| `Clock`           | `SystemClock`           | il dominio non legge mai l'ora di sistema    |
+
+`InMemoryTodoRepository` esiste ancora ma non è più l'adapter dell'app: è il
+**test double** degli handler spec, dove un database vero sarebbe I/O senza
+guadagno — là si verifica l'orchestrazione, non lo storage. Che la sostituzione
+sia costata una riga in `todo.module.ts` è la prova che la porta serviva a
+qualcosa.
 
 La superficie del repository è deliberatamente minima: `findById`, `add`,
 `update`. Nessuna ricerca, nessun filtro, nessun elenco — appartengono al read
 model, e un `findByStatus` qui renderebbe decorativo lo split CQRS. Nessuna
 rimozione: la cancellazione è un cambio di stato, quindi passa per `update`.
+
+### La persistenza
+
+Lo schema è in [`packages/db`](../../../../packages/db), condiviso perché
+`api-query` leggerà lo stesso file. Cinque cose che non si deducono dal codice
+dell'adapter:
+
+**La chiave esterna `todos.owner_id -> users.user_id` è l'unico punto in cui
+questo bounded context e `user/` si toccano.** Nessun import attraversa i due
+moduli, né prima né adesso: il contatto è nello schema, e ci è arrivato perché
+l'esistenza del proprietario non è un invariante dell'aggregato ma un vincolo
+che solo il database può verificare atomicamente. Richiede `PRAGMA
+foreign_keys = ON`, che in SQLite è **per-connessione** e spento per default.
+
+**Il mapper esiste al posto della divisione di `TodoProps` in due tipi.** Il
+commento su quel tipo annunciava che stato interno e contratto di persistenza si
+sarebbero separati quando il DB avesse voluto `expiration` come stringa. Non è
+andata così: la differenza è un `Expiration` da un lato e una `string` ISO
+dall'altro, e sta tutta in `persistence/todo.mapper.ts`. Un tipo in meno da
+tenere allineato.
+
+**`tags` è una colonna `text` con dentro un JSON, non una colonna `json`.** Il
+`mode: 'json'` di Drizzle va accompagnato da `.$type<string[]>()`, che è un cast
+non verificato a runtime: una riga con `'[1,2]'` entrerebbe nell'aggregato
+dichiarando di essere `string[]`, e il danno si manifesterebbe altrove, molto
+dopo. Il mapper fa `JSON.parse` e poi un type guard, e una riga corrotta esce
+come `TodoRowInvalidError`.
+
+**`tags` e `important` sono `NOT NULL`, `description` no.** `snapshot()`
+restituisce sempre un array e `create` normalizza `important` a `false`, quindi
+una colonna nullable creerebbe una seconda rappresentazione dello stesso stato —
+NULL e `'[]'` per "nessun tag". Per `description` invece la corrispondenza
+`undefined` <-> NULL è biunivoca, perché nel dominio "assente" ha una sola
+rappresentazione.
+
+**L'adapter non è `async`, ed è deliberato.** `better-sqlite3` è un driver
+sincrono: non c'è niente da attendere, quindi un `async` senza `await` farebbe
+fallire il lint (`require-await`) e un `await` messo lì per zittirlo farebbe
+scattare `await-thenable`. La firma resta `Promise` perché è il contratto della
+porta, e gli esiti passano da `shared/persistence/settle.ts`.
 
 ## Errori e status HTTP
 
@@ -223,6 +269,7 @@ Tre gerarchie separate, perché la mappatura a valle deve poterle distinguere:
 | `TodoNotFoundError` (application)                   | il comando cita qualcosa che non c'è | 404    |
 | `TodoPersistenceError` (`AlreadyExists`/`NoLonger`) | scrittura andata a vuoto             | 409    |
 | ┗ `TodoOwnerNotFoundError`                          | l'`ownerId` non è di nessuno         | 400    |
+| `TodoRowInvalidError` (persistence)                 | riga che il dominio non rappresenta  | 500    |
 
 Le due foglie con uno status diverso dalla loro base vanno controllate **prima**
 di essa nel filtro, o collasserebbero sul default: l'accesso negato
@@ -322,14 +369,14 @@ Command<void>` (o `Command<T>` se deve restituire qualcosa), senza logica e
 
 ## Test
 
-237 test unitari sul modulo (più 10 in `shared/`) e 27 e2e, divisi per quello
+264 test unitari sul modulo (più 17 in `shared/`) e 29 e2e, divisi per quello
 che possono provare:
 
 | Dove                              | Cosa verifica                                                         |
 | --------------------------------- | --------------------------------------------------------------------- |
 | `domain/**/*.spec.ts`             | invarianti, transizioni, eventi registrati — zero mock                |
 | `application/**/*.spec.ts`        | orchestrazione: cosa viene persistito, cosa pubblicato, in che ordine |
-| `persistence/`, `infrastructure/` | il contratto delle porte lato adapter                                 |
+| `persistence/`, `infrastructure/` | il contratto delle porte lato adapter, su un DB `:memory:`            |
 | `presentation/`                   | traduzione body -> command e le opzioni del `ValidationPipe`          |
 | `test/todo.e2e-spec.ts`           | rotte, status code e mappatura errori su HTTP vero                    |
 
@@ -351,20 +398,26 @@ In ordine di importanza, non di difficoltà:
 2. **Nessun outbox.** L'ordine persisti-poi-pubblica è best-effort: se il
    processo muore in mezzo, l'evento è perso e il read model diverge in modo
    permanente e silenzioso.
-3. **La persistenza è un segnaposto.** Manca il DB, e con lui la concorrenza
-   ottimistica (senza una versione, due comandi concorrenti sullo stesso todo si
-   sovrascrivono a vicenda) e il confine transazionale che tenga insieme
-   scrittura e outbox.
+3. **Nessuna concorrenza ottimistica.** Il DB c'è, ma manca la versione
+   sull'aggregato: due comandi concorrenti sullo stesso todo si sovrascrivono a
+   vicenda, e `add`/`update` sono già la forma giusta per accoglierla
+   (`UPDATE ... WHERE version = ?` che non tocca righe è un conflitto). Manca
+   anche il confine transazionale che tenga insieme scrittura e outbox — oggi
+   `add` e `update` sono ognuno una transazione a sé.
 4. **Il ciclo di vita del proprietario non è gestito.** Il todo ha un
    `ownerId`, ma niente reagisce a `UserDeletedEvent`: i todo di un utente
-   cancellato restano. Non si risolve con una transazione su due aggregati, ma
-   con una policy in coerenza eventuale — che richiede prima il package
-   condiviso di contratti del punto 1. E finché la persistenza è in memoria non
-   c'è la chiave esterna che renda impossibile un todo orfano
-   (`TodoOwnerNotFoundError` è dichiarato ma mai sollevato).
+   cancellato restano — la chiave esterna impedisce un todo orfano alla
+   creazione, non un proprietario che scompare dopo (la cancellazione è logica,
+   quindi la riga dell'utente resta e il vincolo continua a essere soddisfatto).
+   Non si risolve con una transazione su due aggregati, ma con una policy in
+   coerenza eventuale, che richiede prima il package condiviso di contratti del
+   punto 1.
 5. **L'autenticazione è un segnaposto.** `@Actor()` si fida dell'header
    `x-user-id`: chiunque può dichiararsi chiunque. L'ownership è modellata e
    verificata, ma l'identità su cui si basa non è provata.
 6. **Dettagli**: `category` è ancora solo un commento in `TodoProps`; non c'è
    idempotenza sul bus (i comandi non sono idempotenti per scelta); non c'è
-   correlation id per seguire comando -> evento -> proiezione.
+   correlation id per seguire comando -> evento -> proiezione; e una riga
+   corrotta in tabella esce come 400 e non 500 quando è un Value Object a
+   rifiutarla (`Expiration.rehydrate`, `Email.create`), perché il mapper
+   riusa i costruttori del dominio invece di averne uno più permissivo.

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { DatabaseModule } from '../shared/persistence/database.module';
 import { CreateTodoHandler } from './application/commands/create-todo.handler';
 import { DeleteTodoHandler } from './application/commands/delete-todo.handler';
 import { MarkTodoAsDoneHandler } from './application/commands/mark-todo-as-done.handler';
@@ -10,7 +11,7 @@ import { TodoIdGenerator } from './domain/ports/todo-id.generator';
 import { TodoRepository } from './domain/ports/todo.repository';
 import { SystemClock } from './infrastructure/system.clock';
 import { UuidTodoIdGenerator } from './infrastructure/uuid-todo-id.generator';
-import { InMemoryTodoRepository } from './persistence/in-memory-todo.repository';
+import { DrizzleTodoRepository } from './persistence/drizzle-todo.repository';
 import { TodoController } from './presentation/todo.controller';
 
 /**
@@ -32,6 +33,7 @@ import { TodoController } from './presentation/todo.controller';
  * registro di handler, e i comandi finirebbero su quello sbagliato.
  */
 @Module({
+  imports: [DatabaseModule],
   controllers: [TodoController],
   providers: [
     CreateTodoHandler,
@@ -39,7 +41,7 @@ import { TodoController } from './presentation/todo.controller';
     MarkTodoAsDoneHandler,
     ReopenTodoHandler,
     DeleteTodoHandler,
-    { provide: TodoRepository, useClass: InMemoryTodoRepository },
+    { provide: TodoRepository, useClass: DrizzleTodoRepository },
     { provide: TodoIdGenerator, useClass: UuidTodoIdGenerator },
     { provide: Clock, useClass: SystemClock },
   ],

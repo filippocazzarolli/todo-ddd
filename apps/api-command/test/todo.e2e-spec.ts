@@ -4,13 +4,18 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 
 import { AppModule } from './../src/app.module';
+import { SqliteConnection } from './../src/shared/persistence/sqlite.connection';
 import { ACTOR_HEADER } from './../src/shared/presentation/actor.decorator';
 
-/** Il proprietario dei todo creati dai test. */
-const OWNER_ID = 'user-1';
-
-/** Un altro utente autenticato, che non possiede niente di suo. */
-const OTHER_ID = 'user-2';
+/**
+ * I due attori dei test. Sono `let` e non `const` perché ora devono **esistere**
+ * come utenti: la chiave esterna su `todos.owner_id` rende un todo orfano
+ * impossibile, quindi gli id non possono più essere stringhe inventate. Li crea
+ * il `beforeEach` via `POST /users`, che è anche il modo in cui il repo li
+ * otterrebbe in produzione.
+ */
+let OWNER_ID: string;
+let OTHER_ID: string;
 
 /**
  * Unico test che passa da HTTP vero: verifica ciò che gli spec unitari non
@@ -18,8 +23,10 @@ const OTHER_ID = 'user-2';
  * mappatura degli errori del filtro. Il resto (regole, eventi, persistenza) è
  * già coperto sotto `src`.
  *
- * L'app usa `SystemClock` e `InMemoryTodoRepository` reali: nessun mock, ma
- * l'app viene ricostruita a ogni test, quindi il repository riparte vuoto.
+ * L'app usa gli adapter veri — `SystemClock` e i repository Drizzle su SQLite —
+ * senza nessun mock. Il database è `:memory:` (lo impone `jest-e2e-setup.ts`,
+ * per tutti gli e2e e non solo per questo file) e l'app viene ricostruita a ogni
+ * test: ogni test parte da un database vuoto e migrato, senza cleanup.
  *
  * Ogni richiesta porta l'header dell'attore: senza, la rotta risponde 401 e
  * nessun test arriverebbe al dominio. È l'unico posto del repo, oltre al
@@ -44,6 +51,20 @@ describe('Todo (e2e)', () => {
     };
   }
 
+  /**
+   * Crea un utente e ne restituisce l'id. Passa da HTTP come tutto il resto: un
+   * insert diretto in tabella salterebbe la generazione dell'id e il confine
+   * che questo file esiste per esercitare.
+   */
+  async function createUser(email: string): Promise<string> {
+    const response = await request(server)
+      .post('/users')
+      .send({ email, firstName: 'Mario', lastName: 'Rossi' })
+      .expect(201);
+
+    return (response.body as { userId: string }).userId;
+  }
+
   async function createTodo(
     body: Record<string, unknown> = { title: 'Comprare il latte' },
     actorId: string = OWNER_ID,
@@ -65,6 +86,11 @@ describe('Todo (e2e)', () => {
     app = moduleFixture.createNestApplication();
     await app.init();
     server = app.getHttpServer();
+
+    // Le email sono fisse: il database è nuovo a ogni test, quindi `UNIQUE
+    // (email)` non ha modo di scattare.
+    OWNER_ID = await createUser('proprietario@example.com');
+    OTHER_ID = await createUser('altro@example.com');
   });
 
   afterEach(async () => {
@@ -91,6 +117,38 @@ describe('Todo (e2e)', () => {
       expect(Object.keys(body)).toStrictEqual(['todoId']);
       expect(typeof body.todoId).toBe('string');
       expect(body.todoId.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * La prima volta che questo contratto viene esercitato da HTTP. Era
+     * dichiarato dalla porta di persistenza e nessun adapter poteva
+     * rispettarlo: `InMemoryTodoRepository` non vede gli utenti, quindi un todo
+     * orfano era rappresentabile. Ora lo impedisce la chiave esterna.
+     *
+     * Verifica anche l'ordine dei rami del filtro: `TodoOwnerNotFoundError`
+     * eredita da `TodoPersistenceError`, che è 409, e deve essere controllato
+     * prima della sua base per uscire come 400.
+     */
+    it('rifiuta un attore che non è un utente, con 400', async () => {
+      const response = await request(server)
+        .post('/todos')
+        .set(ACTOR_HEADER, 'nessuno')
+        .send({ title: 'Comprare il latte' })
+        .expect(400);
+
+      expect((response.body as { error: string }).error).toBe(
+        'TodoOwnerNotFoundError',
+      );
+    });
+
+    it('non crea il todo orfano che ha rifiutato', async () => {
+      const response = await request(server)
+        .post('/todos')
+        .set(ACTOR_HEADER, 'nessuno')
+        .send({ title: 'Comprare il latte' })
+        .expect(400);
+
+      expect(response.body).not.toHaveProperty('todoId');
     });
 
     it('rifiuta un titolo che non è una stringa: lo ferma il ValidationPipe', async () => {
@@ -388,5 +446,28 @@ describe('Todo (e2e)', () => {
 
   it('risponde 404 su una rotta che non esiste', async () => {
     await request(server).get('/todos').set(ACTOR_HEADER, OWNER_ID).expect(404);
+  });
+
+  /**
+   * Una riga che il dominio non sa rappresentare non è colpa del chiamante: è un
+   * guasto, quindi 500 e non 400. Ci arriva perché `TodoRowInvalidError` non
+   * discende da nessuna delle tre gerarchie che `TodoErrorFilter` cattura — la
+   * regola "un errore di dominio nuovo è 400" vale per il dominio, non per la
+   * persistenza corrotta.
+   */
+  describe('una riga corrotta in tabella', () => {
+    it('risponde 500, non 400', async () => {
+      const todoId = await createTodo();
+      app
+        .get(SqliteConnection)
+        .db.run(
+          `update todos set status = 'archiviato' where todo_id = '${todoId}'`,
+        );
+
+      await request(server)
+        .post(`/todos/${todoId}/done`)
+        .set(ACTOR_HEADER, OWNER_ID)
+        .expect(500);
+    });
   });
 });

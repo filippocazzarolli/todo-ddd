@@ -17,8 +17,9 @@ import { randomBytes } from 'node:crypto';
  * di inserimento, da rivedere se servisse un ordinamento totale stretto.
  *
  * Vive in `shared/` perché è **meccanismo, non contratto**: è una funzione
- * pura, non passa dalla DI e non sa cosa sta identificando. È l'unica parte
- * che vale la pena condividere fra bounded context — le porte
+ * pura e non sa cosa sta identificando. È il criterio che governa tutto
+ * `shared/`, e non il passare o no dalla DI — `SqliteConnection` sta lì pur
+ * essendo un provider. Ciò che si condivide è il meccanismo: le porte
  * (`TodoIdGenerator`, `UserIdGenerator`) restano ognuna nel proprio dominio, e
  * i rispettivi adapter sono tre righe di glue su questa funzione.
  */

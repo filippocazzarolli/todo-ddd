@@ -34,10 +34,10 @@ export abstract class TodoRepository {
    *
    * Due fallimenti dichiarati: `TodoAlreadyExistsError` se l'id esiste già, e
    * `TodoOwnerNotFoundError` se l'`ownerId` non corrisponde a nessun utente.
-   * Il secondo è un contratto in anticipo — nessun adapter lo solleva finché
-   * la persistenza è in memoria — e sta qui e non nell'aggregato perché
-   * l'esistenza del proprietario si verifica solo guardando fuori dal confine
-   * del todo, cioè in un vincolo di chiave esterna.
+   * Il secondo sta qui e non nell'aggregato perché l'esistenza del
+   * proprietario si verifica solo guardando fuori dal confine del todo, cioè in
+   * un vincolo di chiave esterna: lo solleva l'adapter Drizzle, mentre il test
+   * double in memoria non può, non vedendo gli utenti.
    *
    * Distinto da `update` e non un upsert unico, perché un upsert cancella due
    * segnali che vale la pena sentire: l'inserimento di un id duplicato (che è
