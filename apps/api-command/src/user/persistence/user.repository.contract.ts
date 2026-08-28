@@ -1,7 +1,12 @@
-import { CreateUserProps, User } from '../domain/aggregates/user.aggregate';
+import {
+  CreateUserProps,
+  INITIAL_VERSION,
+  User,
+} from '../domain/aggregates/user.aggregate';
 import { UserRepository } from '../domain/ports/user.repository';
 import {
   UserAlreadyExistsError,
+  UserConcurrencyConflictError,
   UserEmailAlreadyTakenError,
   UserNoLongerExistsError,
 } from '../domain/ports/user.repository.errors';
@@ -96,6 +101,7 @@ export function describeUserRepositoryContract(
           lastName: 'Rossi',
           subscription: 'pro',
           deleted: false,
+          version: INITIAL_VERSION,
         });
         expect(user.email.toString()).toBe(EMAIL);
       });
@@ -320,6 +326,119 @@ export function describeUserRepositoryContract(
             User.create(createUserProps({ userId: OTHER_USER_ID })),
           ),
         ).rejects.toThrow(UserEmailAlreadyTakenError);
+      });
+    });
+
+    /**
+     * La concorrenza ottimistica è una regola della **porta**, non un dettaglio
+     * dell'adapter SQL: sta qui perché i due adapter devono rispondere allo
+     * stesso modo allo stesso input.
+     */
+    describe('la concorrenza ottimistica', () => {
+      it('un aggregato appena inserito parte dalla versione iniziale', async () => {
+        await repository.add(User.create(createUserProps()));
+
+        expect((await loadOrFail(repository, USER_ID)).snapshot().version).toBe(
+          INITIAL_VERSION,
+        );
+      });
+
+      it('la versione avanza a ogni scrittura riuscita', async () => {
+        await repository.add(User.create(createUserProps()));
+
+        const primo = await loadOrFail(repository, USER_ID);
+        primo.changeSubscription('pro');
+        await repository.update(primo);
+
+        const secondo = await loadOrFail(repository, USER_ID);
+        secondo.update({ firstName: 'Luigi' });
+        await repository.update(secondo);
+
+        expect((await loadOrFail(repository, USER_ID)).snapshot().version).toBe(
+          INITIAL_VERSION + 2,
+        );
+      });
+
+      it('rifiuta la scrittura di un aggregato caricato prima di un’altra', async () => {
+        await repository.add(User.create(createUserProps()));
+
+        const primo = await loadOrFail(repository, USER_ID);
+        const secondo = await loadOrFail(repository, USER_ID);
+
+        primo.changeSubscription('pro');
+        await repository.update(primo);
+
+        secondo.update({ firstName: 'Luigi' });
+
+        await expect(repository.update(secondo)).rejects.toThrow(
+          UserConcurrencyConflictError,
+        );
+      });
+
+      it('non applica la scrittura che rifiuta', async () => {
+        await repository.add(User.create(createUserProps()));
+
+        const primo = await loadOrFail(repository, USER_ID);
+        const secondo = await loadOrFail(repository, USER_ID);
+
+        primo.changeSubscription('pro');
+        await repository.update(primo);
+
+        secondo.update({ firstName: 'Luigi' });
+        await expect(repository.update(secondo)).rejects.toThrow(
+          UserConcurrencyConflictError,
+        );
+
+        /*
+         * Senza la versione, questo `update` avrebbe riscritto l'aggregato
+         * *intero* e riportato il piano a `free`, cancellando un cambio piano
+         * dietro cui c'è un pagamento.
+         */
+        const finale = await loadOrFail(repository, USER_ID);
+        expect(finale.subscription).toBe('pro');
+        expect(finale.snapshot().firstName).toBe('Mario');
+      });
+
+      it('accetta la stessa scrittura dopo un ricaricamento', async () => {
+        await repository.add(User.create(createUserProps()));
+
+        const primo = await loadOrFail(repository, USER_ID);
+        const secondo = await loadOrFail(repository, USER_ID);
+
+        primo.changeSubscription('pro');
+        await repository.update(primo);
+
+        secondo.update({ firstName: 'Luigi' });
+        await expect(repository.update(secondo)).rejects.toThrow(
+          UserConcurrencyConflictError,
+        );
+
+        const terzo = await loadOrFail(repository, USER_ID);
+        terzo.update({ firstName: 'Luigi' });
+        await expect(repository.update(terzo)).resolves.toBeUndefined();
+
+        const finale = await loadOrFail(repository, USER_ID);
+        expect(finale.snapshot().firstName).toBe('Luigi');
+        expect(finale.subscription).toBe('pro');
+      });
+
+      it('l’istanza che ha già scritto non è più scrivibile', async () => {
+        const user = User.create(createUserProps());
+        await repository.add(user);
+
+        user.changeSubscription('pro');
+        await repository.update(user);
+
+        user.changeSubscription('standard');
+        await expect(repository.update(user)).rejects.toThrow(
+          UserConcurrencyConflictError,
+        );
+      });
+
+      it('un aggregato assente è "non esiste più", non un conflitto', async () => {
+        await expect(
+          repository.update(User.create(createUserProps())),
+        ).rejects.toThrow(UserNoLongerExistsError);
       });
     });
   });

@@ -68,3 +68,28 @@ export class UserNoLongerExistsError extends UserPersistenceError {
     super(`L'utente ${userId} non esiste più`);
   }
 }
+
+/**
+ * `update` su un aggregato che qualcun altro ha riscritto nel frattempo.
+ *
+ * È il fallimento della concorrenza ottimistica: l'aggregato è stato caricato
+ * alla versione `expectedVersion`, e quando la scrittura è arrivata la riga era
+ * già a una versione diversa. Il comando ha deciso su uno stato che non è più
+ * quello attuale.
+ *
+ * Distinto da `UserNoLongerExistsError` benché sia lo stesso `changes === 0`:
+ * là l'aggregato è sparito, qui è cambiato — e per il client sono due reazioni
+ * diverse, rinunciare o ricaricare e riprovare.
+ *
+ * Sottoclasse di `UserPersistenceError` quindi 409, senza toccare il filtro.
+ */
+export class UserConcurrencyConflictError extends UserPersistenceError {
+  constructor(
+    public readonly userId: string,
+    public readonly expectedVersion: number,
+  ) {
+    super(
+      `L'utente ${userId} è stato modificato da qualcun altro dopo la versione ${expectedVersion}`,
+    );
+  }
+}

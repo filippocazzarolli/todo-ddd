@@ -80,7 +80,7 @@ infrastructure/  adapter di Clock e generatori di id
 
 Il **mapper** sta in `persistence/` e non altrove: importa dal dominio (`TodoProps`, `Expiration`) e da `@repo/db` (la forma della riga), e nessun file di `domain/` lo nomina. Nel dominio farebbe dipendere `domain/` dalla forma della riga; in `@repo/db` farebbe dipendere il package condiviso dal dominio di questa app, e `api-query` se lo porterebbe dietro. È anche la ragione per cui `TodoProps` e `UserProps` **non** si sono dovuti dividere in due tipi, come i loro commenti avevano previsto.
 
-Sette convenzioni che, se violate, **rompono in silenzio** — nessun errore di compilazione, nessun test rosso:
+Otto convenzioni che, se violate, **rompono in silenzio** — nessun errore di compilazione, nessun test rosso:
 
 - **Le porte sono `abstract class`, mai `interface` + `Symbol`.** Servono token DI risolvibili a runtime (vedi `isolatedModules` più sotto).
 - **`mergeObjectContext` è obbligatorio.** `AggregateRoot.publishAll` di base è un metodo vuoto: un aggregato non mergiato scarta i suoi eventi al `commit()` senza lanciare niente. Per questo il caricamento passa sempre da `loadTodo` / `loadUser`, che fanno il merge insieme alla lettura — e, per il todo, anche il controllo di ownership.
@@ -89,6 +89,7 @@ Sette convenzioni che, se violate, **rompono in silenzio** — nessun errore di 
 - **Gli eventi portano solo primitivi serializzabili**, mai Value Object: devono poter attraversare una coda.
 - **`SqliteConnection` va dichiarata solo nei `providers` di `DatabaseModule`.** Elencarla anche in un modulo feature fa creare a Nest un'istanza per modulo: nei test, dove il database è `:memory:` e quindi privato per connessione, diventano **due database distinti** — gli utenti in uno, i todo nell'altro, e la chiave esterna violata da ogni `POST /todos`. I moduli feature fanno `imports: [DatabaseModule]`.
 - **Gli e2e prendono il database da `test/jest-e2e-setup.ts`**, non da una riga in cima allo spec. Uno spec che dimenticasse di forzare `:memory:` passerebbe scrivendo sul database di sviluppo.
+- **Un `update` senza la versione nel `WHERE` è un lost update.** Gli adapter scrivono `WHERE <id> = ? AND version = ?` e avanzano a `version + 1`; togliere quella clausola, o riusare `toRow` senza sovrascrivere la versione, fa passare tutti i test — e in produzione due comandi concorrenti si cancellano a vicenda senza che nessuno lo veda. Vale anche per l'adapter in memoria, che replica il controllo di proposito: la concorrenza ottimistica è una regola della porta, non di SQLite, e la suite di contratto la verifica su entrambi.
 
 **I due moduli non si importano tra loro.** `todo/` non nomina `User` e non ha accesso a `UserRepository`: il legame è il solo `ownerId`, un'identità opaca. Anche i duplicati apparenti (`loadTodo` e `loadUser`, sei righe quasi identiche) sono deliberati — astrarli creerebbe un contratto condiviso tra bounded context.
 

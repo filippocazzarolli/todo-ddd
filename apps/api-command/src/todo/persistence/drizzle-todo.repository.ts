@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { todos } from '@repo/db';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { settle } from '../../shared/persistence/settle';
 import { SqliteConnection } from '../../shared/persistence/sqlite.connection';
@@ -8,6 +8,7 @@ import { Todo } from '../domain/aggregates/todo.aggregate';
 import { TodoRepository } from '../domain/ports/todo.repository';
 import {
   TodoAlreadyExistsError,
+  TodoConcurrencyConflictError,
   TodoNoLongerExistsError,
   TodoOwnerNotFoundError,
 } from '../domain/ports/todo.repository.errors';
@@ -80,25 +81,60 @@ export class DrizzleTodoRepository extends TodoRepository {
   }
 
   /**
-   * `changes === 0` significa "riga assente" e non "nessun valore cambiato":
-   * SQLite conta le righe *processate*. Vale l'avvertenza dell'adapter user —
-   * nessun trigger su questa tabella, che falserebbe `sqlite3_changes()`.
+   * Scrittura con **concorrenza ottimistica**: `WHERE todo_id = ? AND version =
+   * ?`, e la riga avanza a `version + 1`.
+   *
+   * `changes === 0` non è più un segnale univoco. Prima significava soltanto
+   * "riga assente", perché SQLite conta le righe *processate* e non quelle il
+   * cui contenuto cambia — un UPDATE che riscrive gli stessi valori conta
+   * comunque 1, a differenza di MySQL. Con la versione nel `WHERE` i casi
+   * diventano due, e sono due esiti diversi per chi chiama: l'aggregato è
+   * sparito (rinuncia) o è cambiato sotto le mani (ricarica e riprova). La
+   * `SELECT` che li distingue sta **dentro la transazione**, come le due di
+   * `add` nell'adapter user: fuori, la riga potrebbe sparire fra l'update a
+   * vuoto e il controllo, e l'errore direbbe la cosa sbagliata.
+   *
+   * Resta l'avvertenza di sempre: nessun trigger su questa tabella, che
+   * falserebbe `sqlite3_changes()`.
    *
    * Non traduce i vincoli: l'unico modificabile qui sarebbe la chiave esterna, e
    * `ownerId` non è aggiornabile (non compare in `UpdateTodoProps`).
    */
   update(todo: Todo): Promise<void> {
-    const row = toRow(todo.snapshot());
+    const state = todo.snapshot();
+    const row = toRow(state);
 
     return settle(() => {
-      const { changes } = this.connection.db
-        .update(todos)
-        .set(row)
-        .where(eq(todos.todoId, row.todoId))
-        .run();
+      const failure = this.connection.db.transaction((tx) => {
+        const { changes } = tx
+          .update(todos)
+          // `toRow` scrive la versione corrente, che qui è quella *attesa*: il
+          // valore nuovo lo decide l'adapter, che è l'unico a sapere di stare
+          // sovrascrivendo invece di inserire.
+          .set({ ...row, version: state.version + 1 })
+          .where(
+            and(eq(todos.todoId, row.todoId), eq(todos.version, state.version)),
+          )
+          .run();
 
-      if (changes === 0) {
-        throw new TodoNoLongerExistsError(row.todoId);
+        if (changes > 0) {
+          return null;
+        }
+
+        const [present] = tx
+          .select({ todoId: todos.todoId })
+          .from(todos)
+          .where(eq(todos.todoId, row.todoId))
+          .limit(1)
+          .all();
+
+        return present === undefined
+          ? new TodoNoLongerExistsError(row.todoId)
+          : new TodoConcurrencyConflictError(row.todoId, state.version);
+      });
+
+      if (failure !== null) {
+        throw failure;
       }
     });
   }

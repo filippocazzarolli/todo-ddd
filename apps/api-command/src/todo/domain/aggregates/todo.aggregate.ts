@@ -30,6 +30,15 @@ import {
 export const TODO_STATUSES = ['todo', 'done'] as const;
 
 /**
+ * Versione di un todo che non è mai stato riscritto dopo l'inserimento.
+ *
+ * Parte da 1 e non da 0 perché la colonna ha `default 1`: una riga scritta
+ * aggirando l'adapter — una migrazione, una fixture — nasce già coerente con
+ * ciò che il dominio si aspetta.
+ */
+export const INITIAL_VERSION = 1;
+
+/**
  * Ciclo di vita del todo. Union di string literal e non `enum`: i valori sono
  * già la loro rappresentazione persistita, quindi non serve un livello di
  * indirezione tra nome e valore.
@@ -95,6 +104,29 @@ export interface TodoProps {
   expiration?: Expiration;
   // category:
   tags?: string[];
+  /**
+   * Generazione dello stato persistito, per la concorrenza ottimistica.
+   *
+   * **Non è un dato del dominio**, ed è l'unico campo di questo tipo a non
+   * esserlo: nessuna invariante lo nomina, nessun comando lo cambia, nessun
+   * evento lo porta. Sta qui perché `TodoProps` è anche il contratto verso la
+   * persistenza, e la versione è ciò che l'adapter confronta per accorgersi che
+   * qualcun altro ha scritto nel frattempo. Per la stessa ragione non ha un
+   * getter pubblico come `status` o `expiration`: chi legge un todo non ha
+   * niente da farci.
+   *
+   * **L'aggregato non la incrementa.** Lo fa l'adapter, che scrive `version + 1`
+   * confrontando su `version`: l'`UPDATE ... WHERE version = ?` ha bisogno del
+   * valore *originale*, e un aggregato che si incrementasse a ogni mutazione ne
+   * salterebbe due in un comando che ne applica due.
+   *
+   * Conseguenza: dopo un `update` andato a buon fine, l'istanza in memoria è
+   * indietro di uno e non è più scrivibile. Gli handler la buttano subito dopo
+   * il `commit()`, quindi non se ne accorge nessuno — ma un handler che volesse
+   * scrivere due volte dovrebbe ricaricare, e questo è esattamente ciò che la
+   * concorrenza ottimistica gli deve imporre.
+   */
+  version: number;
 }
 
 /** Dati grezzi accettati dalla factory: nessun campo derivato o di lifecycle. */
@@ -207,6 +239,7 @@ export class Todo extends AggregateRoot {
       important,
       expiration,
       tags,
+      version: INITIAL_VERSION,
     });
 
     todo.apply(

@@ -57,6 +57,12 @@ export function toRow(state: Readonly<TodoProps>): NewTodoRow {
     // Sempre un array, mai NULL: la colonna è `notNull` perché NULL e `'[]'`
     // sarebbero due rappresentazioni dello stesso stato.
     tags: JSON.stringify(state.tags ?? []),
+    /*
+     * La versione **corrente**, non quella successiva: è il valore su cui
+     * `update` confronta. A scrivere `version + 1` è l'adapter, che è l'unico a
+     * sapere se sta inserendo o sovrascrivendo.
+     */
+    version: state.version,
   };
 }
 
@@ -71,6 +77,7 @@ export function toProps(row: TodoRow): TodoProps {
     important: row.important,
     expiration: toExpiration(row.todoId, row.expiration),
     tags: toTags(row.todoId, row.tags),
+    version: row.version,
   };
 }
 

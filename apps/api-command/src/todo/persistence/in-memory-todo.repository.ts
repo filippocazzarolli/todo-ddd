@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { Todo, TodoProps } from '../domain/aggregates/todo.aggregate';
 import {
   TodoAlreadyExistsError,
+  TodoConcurrencyConflictError,
   TodoNoLongerExistsError,
 } from '../domain/ports/todo.repository.errors';
 import { TodoRepository } from '../domain/ports/todo.repository';
@@ -57,12 +58,33 @@ export class InMemoryTodoRepository extends TodoRepository {
     return Promise.resolve();
   }
 
+  /**
+   * Il confronto sulla versione sta al posto del `WHERE version = ?`
+   * dell'adapter SQL, ed è deliberato che ci sia: la concorrenza ottimistica è
+   * una regola della **porta**, non un dettaglio di SQLite. Senza, i due adapter
+   * risponderebbero in modo diverso allo stesso input, e la suite di contratto
+   * dovrebbe rinunciare a verificarla — che è esattamente il tipo di divergenza
+   * che `TodoOwnerNotFoundError` giustifica e questa no.
+   *
+   * L'ordine dei controlli è quello dell'adapter SQL: prima "esiste ancora?",
+   * poi "è ancora la versione che avevo?".
+   */
   update(todo: Todo): Promise<void> {
-    if (!this.states.has(todo.todoId)) {
+    const stored = this.states.get(todo.todoId);
+
+    if (stored === undefined) {
       return Promise.reject(new TodoNoLongerExistsError(todo.todoId));
     }
 
-    this.states.set(todo.todoId, todo.snapshot());
+    const state = todo.snapshot();
+
+    if (stored.version !== state.version) {
+      return Promise.reject(
+        new TodoConcurrencyConflictError(todo.todoId, state.version),
+      );
+    }
+
+    this.states.set(todo.todoId, { ...state, version: state.version + 1 });
 
     return Promise.resolve();
   }

@@ -302,6 +302,8 @@ Tre gerarchie separate, perché la mappatura a valle deve poterle distinguere:
 | `UserNotFoundError` (application)                   | il comando cita qualcosa che non c'è | 404    |
 | `UserPersistenceError` (`AlreadyExists`/`NoLonger`) | scrittura andata a vuoto             | 409    |
 | ┗ `UserEmailAlreadyTakenError`                      | l'indirizzo è di un altro            | 409    |
+| ┗ `UserConcurrencyConflictError`                    | qualcun altro ha scritto per primo   | 409    |
+| `UserRowInvalidError` (persistence)                 | riga che il dominio non rappresenta  | 500    |
 
 La traduzione è in [`presentation/user-error.filter.ts`](./presentation/user-error.filter.ts),
 registrato sul controller e non globalmente. Un errore di dominio nuovo, non
@@ -367,7 +369,7 @@ Nell'ordine, perché ogni passo si appoggia al precedente:
 
 ## Test
 
-254 test unitari sul modulo, **nessun e2e**: è la differenza pratica più
+268 test unitari sul modulo, **nessun e2e**: è la differenza pratica più
 importante con il modulo todo, che ne ha 31. Le rotte, gli status code reali e
 il comportamento del `ValidationPipe` su HTTP vero non sono coperti da niente.
 
@@ -380,7 +382,7 @@ il comportamento del `ValidationPipe` su HTTP vero non sono coperti da niente.
 
 **I due adapter di `UserRepository` girano sulla stessa suite di contratto**,
 [`persistence/user.repository.contract.ts`](./persistence/user.repository.contract.ts):
-22 casi eseguiti da entrambi. Fra questi c'è ora anche l'ordine fra i due
+29 casi eseguiti da entrambi. Fra questi c'è ora anche l'ordine fra i due
 vincoli di unicità violati insieme — la regola che `DrizzleUserRepository.add`
 difende con `ON CONFLICT DO NOTHING`, e che prima era asserita su un adapter
 solo. L'unico caso rimasto specifico è la riga corrotta, che il test double non
@@ -416,11 +418,10 @@ In ordine di importanza, non di difficoltà:
 5. **Nessun outbox.** L'ordine persisti-poi-pubblica è best-effort: se il
    processo muore in mezzo, l'evento è perso e il read model diverge in modo
    permanente e silenzioso.
-6. **Nessuna concorrenza ottimistica.** Il DB c'è (SQLite via Drizzle, schema in
-   `packages/db`), e con lui il vincolo `UNIQUE` vero. Restano l'assenza di una
-   colonna `version` — due comandi concorrenti sullo stesso utente si
-   sovrascrivono a vicenda — e il confine transazionale che tenga insieme
-   scrittura e outbox.
+6. **Nessun confine transazionale oltre il singolo metodo.** La concorrenza
+   ottimistica c'è (colonna `version`, `UserConcurrencyConflictError`), ma
+   `add` e `update` restano ognuno una transazione a sé: manca il confine che
+   tenga insieme scrittura e outbox.
 7. **Dettagli**: nessuna regola su chi possa cambiare piano (il processo di
    fatturazione non esiste); nessun correlation id per seguire comando ->
    evento -> proiezione.

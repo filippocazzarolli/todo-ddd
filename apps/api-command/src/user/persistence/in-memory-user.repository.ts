@@ -4,6 +4,7 @@ import { User, UserProps } from '../domain/aggregates/user.aggregate';
 import { UserRepository } from '../domain/ports/user.repository';
 import {
   UserAlreadyExistsError,
+  UserConcurrencyConflictError,
   UserEmailAlreadyTakenError,
   UserNoLongerExistsError,
 } from '../domain/ports/user.repository.errors';
@@ -80,13 +81,28 @@ export class InMemoryUserRepository extends UserRepository {
    * dell'indice resta valida per definizione. Quando arriverà `changeEmail`,
    * questo metodo dovrà spostarla — e potrà fallire con
    * `UserEmailAlreadyTakenError` come fa `add`.
+   *
+   * Il confronto sulla versione sta al posto del `WHERE version = ?`
+   * dell'adapter SQL: la concorrenza ottimistica è una regola della **porta**,
+   * non un dettaglio di SQLite, quindi i due adapter devono rispondere allo
+   * stesso modo e la suite di contratto può verificarla su entrambi.
    */
   update(user: User): Promise<void> {
-    if (!this.states.has(user.userId)) {
+    const stored = this.states.get(user.userId);
+
+    if (stored === undefined) {
       return Promise.reject(new UserNoLongerExistsError(user.userId));
     }
 
-    this.states.set(user.userId, user.snapshot());
+    const state = user.snapshot();
+
+    if (stored.version !== state.version) {
+      return Promise.reject(
+        new UserConcurrencyConflictError(user.userId, state.version),
+      );
+    }
+
+    this.states.set(user.userId, { ...state, version: state.version + 1 });
 
     return Promise.resolve();
   }

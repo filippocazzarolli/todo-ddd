@@ -54,6 +54,11 @@ export function toRow(state: Readonly<UserProps>): NewUserRow {
     lastName: state.lastName,
     subscription: state.subscription,
     deleted: state.deleted,
+    /*
+     * La versione **corrente**, non quella successiva: è il valore su cui
+     * `update` confronta. A scrivere `version + 1` è l'adapter.
+     */
+    version: state.version,
   };
 }
 
@@ -65,6 +70,7 @@ export function toProps(row: UserRow): UserProps {
     lastName: row.lastName,
     subscription: toSubscription(row.userId, row.subscription),
     deleted: row.deleted,
+    version: row.version,
   };
 }
 

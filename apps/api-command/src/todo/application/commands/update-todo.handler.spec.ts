@@ -1,7 +1,7 @@
 import { CommandBus, CqrsModule, EventBus } from '@nestjs/cqrs';
 import { Test, TestingModule } from '@nestjs/testing';
 
-import { Todo } from '../../domain/aggregates/todo.aggregate';
+import { INITIAL_VERSION, Todo } from '../../domain/aggregates/todo.aggregate';
 import {
   TodoDeletedError,
   TodoExpirationInPastError,
@@ -108,6 +108,10 @@ describe('UpdateTodoHandler', () => {
       important: true,
       expiration: undefined,
       tags: ['casa'],
+      // Il seed ha inserito alla versione iniziale e l'handler ha scritto una
+      // volta: la versione avanzata è la prova che la scrittura è passata dal
+      // percorso con concorrenza ottimistica.
+      version: INITIAL_VERSION + 1,
     });
   });
 

@@ -43,6 +43,7 @@ Le decisioni non ovvie sono documentate nei rispettivi file. In sintesi:
 - **`users.email` ha un `UNIQUE` pieno, non parziale**: un utente cancellato continua a occupare la sua email.
 - **`status` e `subscription` sono `text` puro**, senza tipi tipizzati: `.$type<TodoStatus>()` costringerebbe questo package a importare il dominio di `api-command`, e `api-query` se lo porterebbe dietro. Il narrowing vive nei mapper delle app.
 - **`tags` è `text` con dentro un JSON**, non una colonna `json`: quel modo richiede un cast non verificato a runtime.
+- **Entrambe le tabelle hanno una colonna `version`**, per la concorrenza ottimistica del lato write: l'adapter scrive `UPDATE ... SET version = ? WHERE <id> = ? AND version = ?`, e zero righe toccate significa che qualcun altro è arrivato prima. Il `default 1` non serve all'adapter, che la valorizza sempre: serve alle righe che nascono altrove — una migrazione, una fixture, un import — perché non partano da un valore che il dominio non si aspetta.
 
 ## La connessione
 

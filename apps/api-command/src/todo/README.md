@@ -252,6 +252,27 @@ NULL e `'[]'` per "nessun tag". Per `description` invece la corrispondenza
 `undefined` <-> NULL è biunivoca, perché nel dominio "assente" ha una sola
 rappresentazione.
 
+**La scrittura è ottimistica, e l'aggregato non se ne accorge.** Ogni riga porta
+una `version`; `update` scrive `WHERE todo_id = ? AND version = ?` e la fa
+avanzare di uno. Zero righe toccate non è più un segnale univoco — l'aggregato
+può essere sparito o essere stato riscritto — quindi l'adapter distingue i due
+casi con una `SELECT` **dentro la stessa transazione**, e solleva
+`TodoNoLongerExistsError` o `TodoConcurrencyConflictError`. Per chi chiama sono
+due reazioni diverse: rinunciare, o ricaricare e riprovare.
+
+L'incremento è dell'adapter e non dell'aggregato, perché l'`UPDATE` ha bisogno
+del valore _originale_ per confrontarlo e un aggregato che si incrementasse a
+ogni mutazione ne salterebbe due in un comando che ne applica due. La
+conseguenza è che dopo un `update` l'istanza in memoria è indietro di uno e non
+è più scrivibile: gli handler la buttano subito dopo il `commit()`, e chi
+volesse riscriverla deve ricaricarla — che è precisamente ciò che questa regola
+deve imporre.
+
+`version` sta in `TodoProps` pur non essendo un dato di dominio: nessuna
+invariante la nomina, nessun comando la cambia, nessun evento la porta. Ci sta
+perché `TodoProps` è anche il contratto verso la persistenza, ed è anche il
+motivo per cui non ha un getter pubblico.
+
 **Il mapper decide cosa significhi un rifiuto del dominio, e il dominio non lo
 sa.** `Expiration.rehydrate` e `Email.create` sollevano errori di _dominio_:
 chiamati sull'input dell'utente vogliono dire "richiesta sbagliata" e finiscono
@@ -285,6 +306,7 @@ Tre gerarchie separate, perché la mappatura a valle deve poterle distinguere:
 | ┗ `TodoNotOwnedError`                               | il todo è di qualcun altro           | 403    |
 | `TodoNotFoundError` (application)                   | il comando cita qualcosa che non c'è | 404    |
 | `TodoPersistenceError` (`AlreadyExists`/`NoLonger`) | scrittura andata a vuoto             | 409    |
+| ┗ `TodoConcurrencyConflictError`                    | qualcun altro ha scritto per primo   | 409    |
 | ┗ `TodoOwnerNotFoundError`                          | l'`ownerId` non è di nessuno         | 400    |
 | `TodoRowInvalidError` (persistence)                 | riga che il dominio non rappresenta  | 500    |
 
@@ -336,9 +358,9 @@ Non è ancora atomico — serve un outbox, vedi _Cosa manca_.
 
 **5. `add` e `update`, non un `save` unico.** Un upsert cancella due segnali che
 servono: l'inserimento di un id duplicato (che è la base dell'idempotenza sulle
-retry) e la scrittura su un aggregato scomparso. È anche il punto dove entrerà
+retry) e la scrittura su un aggregato scomparso. È anche ciò che rende possibile
 la concorrenza ottimistica: `UPDATE ... WHERE version = ?` che non tocca righe è
-un conflitto, mentre in un upsert diventa un insert silenzioso.
+un conflitto, mentre in un upsert diventerebbe un insert silenzioso.
 
 **6. L'update ha tre stati per campo, non due.** Chiave assente = non toccare,
 valore = assegna, `null` = azzera. Con il solo `undefined` le prime due
@@ -386,7 +408,7 @@ Command<void>` (o `Command<T>` se deve restituire qualcosa), senza logica e
 
 ## Test
 
-275 test unitari sul modulo (più 17 in `shared/`) e 31 e2e, divisi per quello
+289 test unitari sul modulo (più 17 in `shared/`) e 31 e2e, divisi per quello
 che possono provare:
 
 | Dove                              | Cosa verifica                                                         |
@@ -399,7 +421,7 @@ che possono provare:
 
 **I due adapter di `TodoRepository` girano sulla stessa suite di contratto**,
 [`persistence/todo.repository.contract.ts`](./persistence/todo.repository.contract.ts):
-24 casi che valgono per qualunque implementazione della porta, eseguiti sia
+31 casi che valgono per qualunque implementazione della porta, eseguiti sia
 dall'adapter Drizzle sia dal test double. Restano nelle rispettive spec solo i
 casi che un adapter non _può_ avere — la chiave esterna e le righe corrotte da
 una parte, l'isolamento fra istanze dall'altra.
@@ -428,12 +450,11 @@ In ordine di importanza, non di difficoltà:
 2. **Nessun outbox.** L'ordine persisti-poi-pubblica è best-effort: se il
    processo muore in mezzo, l'evento è perso e il read model diverge in modo
    permanente e silenzioso.
-3. **Nessuna concorrenza ottimistica.** Il DB c'è, ma manca la versione
-   sull'aggregato: due comandi concorrenti sullo stesso todo si sovrascrivono a
-   vicenda, e `add`/`update` sono già la forma giusta per accoglierla
-   (`UPDATE ... WHERE version = ?` che non tocca righe è un conflitto). Manca
-   anche il confine transazionale che tenga insieme scrittura e outbox — oggi
-   `add` e `update` sono ognuno una transazione a sé.
+3. **Nessun confine transazionale oltre il singolo metodo.** `add` e `update`
+   sono ognuno una transazione a sé, e gli adapter parlano con la connessione
+   attraverso un `db` fisso: non c'è modo di far partecipare una scrittura a una
+   transazione decisa da fuori. È il motivo per cui l'outbox del punto 2 non è
+   "codice da aggiungere" ma un cambio di forma degli adapter.
 4. **Il ciclo di vita del proprietario non è gestito.** Il todo ha un
    `ownerId`, ma niente reagisce a `UserDeletedEvent`: i todo di un utente
    cancellato restano — la chiave esterna impedisce un todo orfano alla

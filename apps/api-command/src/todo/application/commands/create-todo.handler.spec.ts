@@ -1,7 +1,7 @@
 import { CommandBus, CqrsModule, EventBus } from '@nestjs/cqrs';
 import { Test, TestingModule } from '@nestjs/testing';
 
-import { Todo } from '../../domain/aggregates/todo.aggregate';
+import { INITIAL_VERSION, Todo } from '../../domain/aggregates/todo.aggregate';
 import {
   TodoExpirationInPastError,
   TodoTitleRequiredError,
@@ -117,6 +117,7 @@ describe('CreateTodoHandler', () => {
       important: false,
       expiration: undefined,
       tags: [],
+      version: INITIAL_VERSION,
     });
   });
 

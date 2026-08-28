@@ -31,6 +31,15 @@ import { Email } from '../value-objects/email.value-object';
 export const USER_SUBSCRIPTIONS = ['free', 'standard', 'pro'] as const;
 
 /**
+ * Versione di un utente che non è mai stato riscritto dopo l'inserimento.
+ *
+ * Parte da 1 e non da 0 perché la colonna ha `default 1`: una riga scritta
+ * aggirando l'adapter — una migrazione, una fixture — nasce già coerente con
+ * ciò che il dominio si aspetta.
+ */
+export const INITIAL_VERSION = 1;
+
+/**
  * Piano di abbonamento dell'utente. Union di string literal e non `enum`, come
  * `TodoStatus`: i valori sono già la loro rappresentazione persistita, quindi
  * non serve un livello di indirezione tra nome e valore.
@@ -74,6 +83,22 @@ export interface UserProps {
    * anche dopo.
    */
   deleted: boolean;
+  /**
+   * Generazione dello stato persistito, per la concorrenza ottimistica.
+   *
+   * **Non è un dato del dominio**, ed è l'unico campo di questo tipo a non
+   * esserlo: nessuna invariante lo nomina, nessun comando lo cambia, nessun
+   * evento lo porta. Sta qui perché `UserProps` è anche il contratto verso la
+   * persistenza, e la versione è ciò che l'adapter confronta per accorgersi che
+   * qualcun altro ha scritto nel frattempo. Per la stessa ragione non ha un
+   * getter pubblico come `subscription` o `email`.
+   *
+   * **L'aggregato non la incrementa**: lo fa l'adapter, che scrive `version + 1`
+   * confrontando su `version`. Vale parola per parola quanto scritto in
+   * `TodoProps` — ed è un duplicato deliberato, come `loadUser` rispetto a
+   * `loadTodo`: un tipo condiviso qui sarebbe un contratto fra bounded context.
+   */
+  version: number;
 }
 
 /** Dati grezzi accettati dalla factory: nessun campo derivato o di lifecycle. */
@@ -165,6 +190,7 @@ export class User extends AggregateRoot {
       lastName,
       subscription,
       deleted: false,
+      version: INITIAL_VERSION,
     });
 
     user.apply(

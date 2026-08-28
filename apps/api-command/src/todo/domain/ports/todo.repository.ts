@@ -51,14 +51,28 @@ export abstract class TodoRepository {
   abstract add(todo: Todo): Promise<void>;
 
   /**
-   * Sovrascrive un aggregato esistente. `TodoNoLongerExistsError` se non c'è.
+   * Sovrascrive un aggregato esistente, **se nessun altro l'ha già fatto**.
+   *
+   * Due fallimenti dichiarati, e la differenza fra i due conta per chi chiama:
+   * `TodoNoLongerExistsError` se l'aggregato è sparito (rinunciare), e
+   * `TodoConcurrencyConflictError` se è stato riscritto dopo che l'avevamo
+   * caricato (ricaricare e riprovare).
    *
    * Scrive l'aggregato intero e non i soli campi cambiati: il delta è un
-   * concetto degli eventi, non della persistenza dello stato. Qui passerà il
-   * controllo di concorrenza ottimistica quando l'aggregato avrà una versione,
-   * ed è l'altra ragione per cui non è un upsert — `UPDATE ... WHERE version =
-   * ?` che non tocca righe è un conflitto, mentre lo stesso in un upsert
-   * diventa un insert silenzioso.
+   * concetto degli eventi, non della persistenza dello stato. È anche la
+   * ragione per cui la concorrenza ottimistica serve davvero — riscrivendo
+   * tutto, un aggregato caricato prima di un altro comando ne cancellerebbe le
+   * decisioni in silenzio, non solo sui campi che tocca.
+   *
+   * Il confronto avviene sulla `version` dello stato caricato; ogni scrittura
+   * riuscita la fa avanzare di uno. **L'aggregato non se ne accorge**: dopo un
+   * `update` l'istanza in memoria è indietro di uno e non è più scrivibile.
+   * Volerlo riscrivere significa ricaricarlo, che è precisamente ciò che questa
+   * regola deve imporre.
+   *
+   * È l'altra ragione per cui non è un upsert: `UPDATE ... WHERE version = ?`
+   * che non tocca righe è un conflitto, mentre lo stesso in un upsert diventa
+   * un insert silenzioso.
    */
   abstract update(todo: Todo): Promise<void>;
 }

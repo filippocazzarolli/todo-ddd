@@ -12,6 +12,7 @@ import { UserUpdatedEvent } from '../events/user-updated.event';
 import { Email } from '../value-objects/email.value-object';
 import {
   CreateUserProps,
+  INITIAL_VERSION,
   USER_SUBSCRIPTIONS,
   User,
   UserProps,
@@ -56,6 +57,7 @@ function persistedState(overrides: Partial<UserProps> = {}) {
     lastName: 'Rossi',
     subscription: 'free',
     deleted: false,
+    version: INITIAL_VERSION,
     ...overrides,
   } satisfies UserProps;
 }
@@ -77,6 +79,7 @@ describe('User', () => {
         lastName: 'Rossi',
         subscription: 'free',
         deleted: false,
+        version: INITIAL_VERSION,
       });
       expect(user.userId).toBe(USER_ID);
       expect(user.email.toString()).toBe('mario.rossi@example.com');

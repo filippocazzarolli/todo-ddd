@@ -21,4 +21,9 @@ export const users = sqliteTable("users", {
   lastName: text("last_name").notNull(),
   subscription: text("subscription").notNull(),
   deleted: integer("deleted", { mode: "boolean" }).notNull().default(false),
+  /**
+   * Generazione della riga, per la concorrenza ottimistica del lato write.
+   * Stessa colonna e stessa ragione di `todos.version`, documentata lì.
+   */
+  version: integer("version").notNull().default(1),
 });

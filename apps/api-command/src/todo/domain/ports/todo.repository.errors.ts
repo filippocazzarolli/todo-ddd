@@ -43,6 +43,36 @@ export class TodoNoLongerExistsError extends TodoPersistenceError {
 }
 
 /**
+ * `update` su un aggregato che qualcun altro ha riscritto nel frattempo.
+ *
+ * È il fallimento della concorrenza ottimistica: l'aggregato è stato caricato
+ * alla versione `expectedVersion`, e quando la scrittura è arrivata la riga era
+ * già a una versione diversa. Il comando ha deciso su uno stato che non è più
+ * quello attuale, quindi la sua decisione non vale più — e non è riparabile
+ * qui, perché solo il chiamante sa se, ricaricando, vuole ancora la stessa cosa.
+ *
+ * Distinto da `TodoNoLongerExistsError` benché sia lo stesso `changes === 0`:
+ * là l'aggregato è sparito, qui è cambiato. Per il client sono due reazioni
+ * diverse — rinunciare, o ricaricare e riprovare — ed è la ragione per cui
+ * l'adapter, dopo un update a vuoto, va a guardare se la riga c'è ancora invece
+ * di scegliere a caso.
+ *
+ * Sottoclasse di `TodoPersistenceError` quindi 409, senza bisogno di toccare il
+ * filtro: la corsa persa è esattamente il caso che quel ramo descrive, e il
+ * nome della classe nel body distingue i tre 409 possibili.
+ */
+export class TodoConcurrencyConflictError extends TodoPersistenceError {
+  constructor(
+    public readonly todoId: string,
+    public readonly expectedVersion: number,
+  ) {
+    super(
+      `Il todo ${todoId} è stato modificato da qualcun altro dopo la versione ${expectedVersion}`,
+    );
+  }
+}
+
+/**
  * `add` con un `ownerId` che non corrisponde a nessun utente.
  *
  * L'esistenza del proprietario non è un invariante dell'aggregato `Todo` —

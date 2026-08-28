@@ -49,14 +49,25 @@ export abstract class UserRepository {
   abstract add(user: User): Promise<void>;
 
   /**
-   * Sovrascrive un aggregato esistente. `UserNoLongerExistsError` se non c'è.
+   * Sovrascrive un aggregato esistente, **se nessun altro l'ha già fatto**.
+   *
+   * Due fallimenti dichiarati, e la differenza conta per chi chiama:
+   * `UserNoLongerExistsError` se l'aggregato è sparito,
+   * `UserConcurrencyConflictError` se è stato riscritto dopo il caricamento.
    *
    * Scrive l'aggregato intero e non i soli campi cambiati: il delta è un
-   * concetto degli eventi, non della persistenza dello stato. Qui passerà il
-   * controllo di concorrenza ottimistica quando l'aggregato avrà una versione,
-   * ed è l'altra ragione per cui non è un upsert — `UPDATE ... WHERE version =
-   * ?` che non tocca righe è un conflitto, mentre lo stesso in un upsert
-   * diventa un insert silenzioso.
+   * concetto degli eventi, non della persistenza dello stato. È anche la
+   * ragione per cui la concorrenza ottimistica serve davvero — riscrivendo
+   * tutto, un aggregato caricato prima di un altro comando ne cancellerebbe le
+   * decisioni in silenzio.
+   *
+   * Il confronto avviene sulla `version` dello stato caricato; ogni scrittura
+   * riuscita la fa avanzare di uno, e l'istanza in memoria resta indietro: dopo
+   * un `update` non è più scrivibile senza ricaricarla.
+   *
+   * È l'altra ragione per cui non è un upsert: `UPDATE ... WHERE version = ?`
+   * che non tocca righe è un conflitto, mentre lo stesso in un upsert diventa
+   * un insert silenzioso.
    */
   abstract update(user: User): Promise<void>;
 }

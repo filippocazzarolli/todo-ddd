@@ -14,7 +14,12 @@ import { TodoMarkedAsDoneEvent } from '../events/todo-marked-as-done.event';
 import { TodoReopenedEvent } from '../events/todo-reopened.event';
 import { TodoUpdatedEvent } from '../events/todo-updated.event';
 import { Expiration } from '../value-objects/expiration.value-object';
-import { CreateTodoProps, Todo, TodoProps } from './todo.aggregate';
+import {
+  CreateTodoProps,
+  INITIAL_VERSION,
+  Todo,
+  TodoProps,
+} from './todo.aggregate';
 
 /**
  * Il todoId arriva dall'esterno (`TodoIdGenerator`), quindi qui è un valore
@@ -59,6 +64,7 @@ function doneState(overrides: Partial<TodoProps> = {}) {
     title: 'Comprare il latte',
     status: 'done',
     deleted: false,
+    version: INITIAL_VERSION,
     ...overrides,
   } satisfies TodoProps;
 }
@@ -78,6 +84,7 @@ describe('Todo', () => {
         important: false,
         expiration: undefined,
         tags: [],
+        version: INITIAL_VERSION,
       });
       expect(todo.todoId).toBe(TODO_ID);
       expect(todo.status).toBe('todo');
@@ -282,6 +289,7 @@ describe('Todo', () => {
         important: true,
         expiration: undefined,
         tags: ['casa'],
+        version: INITIAL_VERSION,
       });
       expect(todo.isDone).toBe(true);
     });
@@ -347,6 +355,7 @@ describe('Todo', () => {
         deleted: false,
         important: false,
         tags: [],
+        version: INITIAL_VERSION,
         ...overrides,
       } satisfies TodoProps;
     }
@@ -380,6 +389,9 @@ describe('Todo', () => {
         important: true,
         expiration: undefined,
         tags: ['casa'],
+        // Un comando di dominio non tocca la versione: la fa avanzare la
+        // scrittura, non la mutazione.
+        version: INITIAL_VERSION,
       });
       expect(todo.getUncommittedEvents()).toStrictEqual([
         new TodoUpdatedEvent(TODO_ID, OWNER_ID, {

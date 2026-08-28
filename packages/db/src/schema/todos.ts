@@ -39,4 +39,16 @@ export const todos = sqliteTable("todos", {
   important: integer("important", { mode: "boolean" }).notNull().default(false),
   expiration: text("expiration"),
   tags: text("tags").notNull(),
+  /**
+   * Generazione della riga, per la concorrenza ottimistica del lato write.
+   *
+   * L'adapter scrive `UPDATE ... SET version = ? WHERE todo_id = ? AND version =
+   * ?`: zero righe toccate significa che qualcun altro ha scritto nel frattempo,
+   * e la scrittura si basava su uno stato che non esiste più.
+   *
+   * `default 1` non serve all'adapter, che la valorizza sempre: serve alle righe
+   * che nascono altrove — una migrazione, una fixture, un import — perché non
+   * partano da NULL o da 0, che il dominio non si aspetta.
+   */
+  version: integer("version").notNull().default(1),
 });

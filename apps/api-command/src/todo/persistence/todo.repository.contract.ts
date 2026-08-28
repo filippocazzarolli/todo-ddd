@@ -1,8 +1,13 @@
-import { CreateTodoProps, Todo } from '../domain/aggregates/todo.aggregate';
+import {
+  CreateTodoProps,
+  INITIAL_VERSION,
+  Todo,
+} from '../domain/aggregates/todo.aggregate';
 import { TodoDeletedError } from '../domain/errors/todo.errors';
 import { TodoRepository } from '../domain/ports/todo.repository';
 import {
   TodoAlreadyExistsError,
+  TodoConcurrencyConflictError,
   TodoNoLongerExistsError,
 } from '../domain/ports/todo.repository.errors';
 
@@ -330,19 +335,28 @@ export function describeTodoRepositoryContract(
       });
 
       it('persiste ogni transizione del ciclo di vita', async () => {
-        const todo = Todo.create(createTodoProps());
-        await repository.add(todo);
+        await repository.add(Todo.create(createTodoProps()));
 
-        todo.markAsDone();
-        await repository.update(todo);
+        /*
+         * Ogni transizione riparte da un caricamento, e non è verbosità: con la
+         * concorrenza ottimistica un'istanza che ha già scritto è indietro di
+         * una versione e il secondo `update` sarebbe un conflitto. È anche il
+         * modo in cui lavorano gli handler, che caricano, mutano e scrivono una
+         * volta sola.
+         */
+        const daCompletare = await loadOrFail(repository, TODO_ID);
+        daCompletare.markAsDone();
+        await repository.update(daCompletare);
         expect((await loadOrFail(repository, TODO_ID)).status).toBe('done');
 
-        todo.reopen();
-        await repository.update(todo);
+        const daRiaprire = await loadOrFail(repository, TODO_ID);
+        daRiaprire.reopen();
+        await repository.update(daRiaprire);
         expect((await loadOrFail(repository, TODO_ID)).status).toBe('todo');
 
-        todo.delete();
-        await repository.update(todo);
+        const daCancellare = await loadOrFail(repository, TODO_ID);
+        daCancellare.delete();
+        await repository.update(daCancellare);
         expect((await loadOrFail(repository, TODO_ID)).isDeleted).toBe(true);
       });
 
@@ -365,23 +379,17 @@ export function describeTodoRepositoryContract(
         expect(caricato.snapshot().expiration).toBeUndefined();
       });
 
-      it('è ripetibile: due update identici non duplicano niente', async () => {
+      it('riesce anche quando nessun valore cambia davvero', async () => {
+        /*
+         * Premessa dell'adapter SQL: SQLite conta le righe *processate*, non
+         * quelle il cui contenuto cambia, quindi un UPDATE che riscrive gli
+         * stessi valori conta comunque 1. Senza, `changes === 0` sarebbe un
+         * falso positivo su ogni no-op invece di un segnale.
+         */
         const todo = Todo.create(createTodoProps());
         await repository.add(todo);
 
-        /*
-         * Vale anche come premessa dell'adapter SQL: SQLite conta le righe
-         * *processate*, non quelle il cui contenuto cambia, quindi un UPDATE
-         * che riscrive gli stessi valori conta comunque 1. È ciò che rende
-         * `changes === 0` un segnale valido per la riga assente.
-         */
-        todo.markAsDone();
-        await repository.update(todo);
         await expect(repository.update(todo)).resolves.toBeUndefined();
-
-        expect(
-          (await loadOrFail(repository, TODO_ID)).snapshot(),
-        ).toStrictEqual(todo.snapshot());
       });
 
       it('rifiuta un id assente con TodoNoLongerExistsError', async () => {
@@ -421,6 +429,130 @@ export function describeTodoRepositoryContract(
         expect((await loadOrFail(repository, OTHER_TODO_ID)).isDone).toBe(
           false,
         );
+      });
+    });
+
+    /**
+     * La concorrenza ottimistica è una regola della **porta**, non un dettaglio
+     * dell'adapter SQL: sta qui, e non nella spec di Drizzle, perché i due
+     * adapter devono rispondere allo stesso modo allo stesso input.
+     */
+    describe('la concorrenza ottimistica', () => {
+      it('un aggregato appena inserito parte dalla versione iniziale', async () => {
+        await repository.add(Todo.create(createTodoProps()));
+
+        expect((await loadOrFail(repository, TODO_ID)).snapshot().version).toBe(
+          INITIAL_VERSION,
+        );
+      });
+
+      it('la versione avanza a ogni scrittura riuscita', async () => {
+        await repository.add(Todo.create(createTodoProps()));
+
+        const primo = await loadOrFail(repository, TODO_ID);
+        primo.markAsDone();
+        await repository.update(primo);
+
+        const secondo = await loadOrFail(repository, TODO_ID);
+        secondo.reopen();
+        await repository.update(secondo);
+
+        expect((await loadOrFail(repository, TODO_ID)).snapshot().version).toBe(
+          INITIAL_VERSION + 2,
+        );
+      });
+
+      it('rifiuta la scrittura di un aggregato caricato prima di un’altra', async () => {
+        await repository.add(Todo.create(createTodoProps()));
+
+        // Due caricamenti dalla stessa versione: è la corsa, riprodotta senza
+        // bisogno di concorrenza vera.
+        const primo = await loadOrFail(repository, TODO_ID);
+        const secondo = await loadOrFail(repository, TODO_ID);
+
+        primo.markAsDone();
+        await repository.update(primo);
+
+        secondo.update({ now: NOW, title: 'Comprare il pane' });
+
+        await expect(repository.update(secondo)).rejects.toThrow(
+          TodoConcurrencyConflictError,
+        );
+      });
+
+      it('non applica la scrittura che rifiuta', async () => {
+        await repository.add(Todo.create(createTodoProps()));
+
+        const primo = await loadOrFail(repository, TODO_ID);
+        const secondo = await loadOrFail(repository, TODO_ID);
+
+        primo.markAsDone();
+        await repository.update(primo);
+
+        secondo.update({ now: NOW, title: 'Comprare il pane' });
+        await expect(repository.update(secondo)).rejects.toThrow(
+          TodoConcurrencyConflictError,
+        );
+
+        /*
+         * Il punto di tutto il meccanismo: senza la versione, questo `update`
+         * avrebbe riscritto l'aggregato *intero* e cancellato il `markAsDone`
+         * del primo, in silenzio e senza che nessuno se ne accorgesse.
+         */
+        const finale = await loadOrFail(repository, TODO_ID);
+        expect(finale.isDone).toBe(true);
+        expect(finale.snapshot().title).toBe('Comprare il latte');
+      });
+
+      it('accetta la stessa scrittura dopo un ricaricamento', async () => {
+        await repository.add(Todo.create(createTodoProps()));
+
+        const primo = await loadOrFail(repository, TODO_ID);
+        const secondo = await loadOrFail(repository, TODO_ID);
+
+        primo.markAsDone();
+        await repository.update(primo);
+
+        secondo.update({ now: NOW, title: 'Comprare il pane' });
+        await expect(repository.update(secondo)).rejects.toThrow(
+          TodoConcurrencyConflictError,
+        );
+
+        // La reazione giusta del chiamante: ricaricare e ridecidere.
+        const terzo = await loadOrFail(repository, TODO_ID);
+        terzo.update({ now: NOW, title: 'Comprare il pane' });
+        await expect(repository.update(terzo)).resolves.toBeUndefined();
+
+        expect((await loadOrFail(repository, TODO_ID)).snapshot().title).toBe(
+          'Comprare il pane',
+        );
+      });
+
+      it('l’istanza che ha già scritto non è più scrivibile', async () => {
+        /*
+         * Conseguenza diretta del fatto che l'aggregato non incrementa la
+         * propria versione: dopo un `update` è indietro di uno. Gli handler la
+         * buttano subito dopo il `commit()`, ma se qualcuno provasse a
+         * riusarla, il rifiuto è il comportamento voluto.
+         */
+        const todo = Todo.create(createTodoProps());
+        await repository.add(todo);
+
+        todo.markAsDone();
+        await repository.update(todo);
+
+        todo.reopen();
+        await expect(repository.update(todo)).rejects.toThrow(
+          TodoConcurrencyConflictError,
+        );
+      });
+
+      it('un aggregato assente è "non esiste più", non un conflitto', async () => {
+        // I due esiti nascono dallo stesso `changes === 0` e vanno distinti:
+        // per il client sono rinunciare e riprovare.
+        await expect(
+          repository.update(Todo.create(createTodoProps())),
+        ).rejects.toThrow(TodoNoLongerExistsError);
       });
     });
   });

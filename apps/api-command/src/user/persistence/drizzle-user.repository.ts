@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { users } from '@repo/db';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { settle } from '../../shared/persistence/settle';
 import { SqliteConnection } from '../../shared/persistence/sqlite.connection';
@@ -8,6 +8,7 @@ import { User } from '../domain/aggregates/user.aggregate';
 import { UserRepository } from '../domain/ports/user.repository';
 import {
   UserAlreadyExistsError,
+  UserConcurrencyConflictError,
   UserEmailAlreadyTakenError,
   UserNoLongerExistsError,
   UserPersistenceError,
@@ -126,27 +127,55 @@ export class DrizzleUserRepository extends UserRepository {
   }
 
   /**
-   * `changes === 0` significa "riga assente", non "nessun valore cambiato":
-   * SQLite conta le righe *processate*, quindi un UPDATE che riscrive gli stessi
-   * valori conta comunque 1 (a differenza di MySQL). È ciò che rende questo
-   * controllo un segnale valido — e che vieta di mettere trigger su questa
-   * tabella, che falserebbero `sqlite3_changes()`.
+   * Scrittura con **concorrenza ottimistica**: `WHERE user_id = ? AND version =
+   * ?`, e la riga avanza a `version + 1`.
+   *
+   * `changes === 0` non è più un segnale univoco. Prima significava soltanto
+   * "riga assente", perché SQLite conta le righe *processate* e non quelle il
+   * cui contenuto cambia — un UPDATE che riscrive gli stessi valori conta
+   * comunque 1, a differenza di MySQL. Con la versione nel `WHERE` i casi
+   * diventano due, e la `SELECT` che li distingue sta dentro la transazione per
+   * la stessa ragione delle due di `add`: fuori, la riga potrebbe sparire fra
+   * l'update a vuoto e il controllo.
+   *
+   * Resta l'avvertenza di sempre: nessun trigger su questa tabella, che
+   * falserebbe `sqlite3_changes()`.
    *
    * Non tocca l'email, che non è modificabile: quando arriverà `changeEmail`
    * questo metodo erediterà anche `UserEmailAlreadyTakenError`, come `add`.
    */
   update(user: User): Promise<void> {
-    const row = toRow(user.snapshot());
+    const state = user.snapshot();
+    const row = toRow(state);
 
     return settle(() => {
-      const { changes } = this.connection.db
-        .update(users)
-        .set(row)
-        .where(eq(users.userId, row.userId))
-        .run();
+      const failure = this.connection.db.transaction((tx) => {
+        const { changes } = tx
+          .update(users)
+          .set({ ...row, version: state.version + 1 })
+          .where(
+            and(eq(users.userId, row.userId), eq(users.version, state.version)),
+          )
+          .run();
 
-      if (changes === 0) {
-        throw new UserNoLongerExistsError(row.userId);
+        if (changes > 0) {
+          return null;
+        }
+
+        const [present] = tx
+          .select({ userId: users.userId })
+          .from(users)
+          .where(eq(users.userId, row.userId))
+          .limit(1)
+          .all();
+
+        return present === undefined
+          ? new UserNoLongerExistsError(row.userId)
+          : new UserConcurrencyConflictError(row.userId, state.version);
+      });
+
+      if (failure !== null) {
+        throw failure;
       }
     });
   }
