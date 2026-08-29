@@ -1,5 +1,12 @@
 # todo-ddd
 
+> [!IMPORTANT]
+> **Questo repo è incompleto e non è più sviluppato. La versione 2 è [filippocazzarolli/todo-v2-ddd](https://github.com/filippocazzarolli/todo-v2-ddd).**
+>
+> Qui il lato read non è mai stato scritto e gli eventi di dominio non escono dal processo. Ma la ragione vera della riscrittura è un'altra: **tenere tutto dentro `apps/api-command` non fa vedere la separazione fra i layer.** `domain/`, `application/`, `persistence/`, `presentation/` e `infrastructure/` sono solo cartelle dentro lo stesso workspace — la regola di dipendenza è una convenzione scritta nei README, non un confine che qualcosa impone: nessun package separato, nessun build indipendente, nessuna regola di lint che vieti a `domain/` di importare da `persistence/`. Basta una riga sbagliata perché il dominio dipenda dalla sua infrastruttura, e niente se ne accorge. La versione 2 rende quei confini espliciti.
+>
+> Il resto di questo README descrive lo stato di questo repo, che resta consultabile come riferimento.
+
 Monorepo Turborepo con un'applicazione di gestione todo modellata in **Domain-Driven Design**, su uno split **CQRS** in due servizi separati: `api-command` scrive, `api-query` legge.
 
 ## Stato
